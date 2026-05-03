@@ -10,7 +10,7 @@ abstract: |
   random bins and placing it in the lighter one, the maximum load drops from
   $\Theta(\log n / \log\log n)$ to $\ln\ln n / \ln 2 + \Theta(1)$ — an
   exponential improvement from a single extra choice.
-engine: knitr
+
 ---
 
 ## Why this lecture matters

@@ -10,7 +10,6 @@ abstract: |
   *and* decrease-key, $O(\log n)$ amortized delete-min). The key insight behind
   Fibonacci heaps is strategic laziness — defer consolidation to delete-min, and
   use cascading cuts to prevent trees from becoming too shallow.
-engine: knitr
 ---
 
 ## Why this lecture matters
