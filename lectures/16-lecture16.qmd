@@ -37,24 +37,24 @@ $$ {#eq-lp}
 
 where $A$ is $m \times n$, $b \in \mathbb{R}^n$, and $c \in \mathbb{R}^n$. The polytope $P = \{x : Ax = b,\, x \ge 0\}$. A vertex $x \in P$ has the property that $A_{\mathcal{B}'(x)}$—the submatrix of columns indexed by $\mathcal{B}'(x) = \{j : x_j > 0\}$—has full column rank.
 
-At each step Simplex maintains a **basis** $\mathcal{B} \subseteq \{1,\dots,n\}$ with $|\mathcal{B}| = m$ and $A_\mathcal{B}$ invertible. Writing $\mathcal{N} = \{1,\dots,n\} \setminus \mathcal{B}$ for the non-basic indices, we substitute $x_\mathcal{B} = A_\mathcal{B}^{-1}(b - A_\mathcal{N} x_\mathcal{N})$ into the objective and obtain the **reduced cost**
+At each step Simplex maintains a **basis** $\mathcal{B} \subseteq \{1,\dots,n\}$ with $|\mathcal{B}| = m$ and $A_{\mathcal{B}}$ invertible. Writing $\mathcal{N} = \{1,\dots,n\} \setminus \mathcal{B}$ for the non-basic indices, we substitute $x_{\mathcal{B}} = A_{\mathcal{B}}^{-1}(b - A_{\mathcal{N}} x_{\mathcal{N}})$ into the objective and obtain the **reduced cost**
 
 $$
-\tilde{c}_\mathcal{N} = c_\mathcal{N} - A_\mathcal{N}^\top (A_\mathcal{B}^{-1})^\top c_\mathcal{B}.
+\tilde{c}_{\mathcal{N}} = c_{\mathcal{N}} - A_{\mathcal{N}}^\top (A_{\mathcal{B}}^{-1})^\top c_{\mathcal{B}}.
 $$ {#eq-reduced-cost}
 
 ### Rewriting the LP in terms of the basis
 
-The substitution $x_\mathcal{B} = A_\mathcal{B}^{-1}(b - A_\mathcal{N} x_\mathcal{N})$ lets you rewrite the objective entirely in terms of the non-basic variables. The constant term $c_\mathcal{B}^\top A_\mathcal{B}^{-1} b$ is the objective value at the current vertex (where $x_\mathcal{N} = 0$). The reduced cost $\tilde{c}_\mathcal{N}$ tells you the rate at which the objective changes if you start increasing any non-basic variable away from zero.
+The substitution $x_{\mathcal{B}} = A_{\mathcal{B}}^{-1}(b - A_{\mathcal{N}} x_{\mathcal{N}})$ lets you rewrite the objective entirely in terms of the non-basic variables. The constant term $c_{\mathcal{B}}^\top A_{\mathcal{B}}^{-1} b$ is the objective value at the current vertex (where $x_{\mathcal{N}} = 0$). The reduced cost $\tilde{c}_{\mathcal{N}}$ tells you the rate at which the objective changes if you start increasing any non-basic variable away from zero.
 
 Think of it this way: you are sitting at a vertex. Each non-basic variable is a door you could open. The reduced cost of that variable tells you whether walking through that door improves or worsens the objective.
 
 ### The non-degenerate case
 
-If $v_\mathcal{B} > 0$ (every basic variable is strictly positive), the rule is clean:
+If $v_{\mathcal{B}} > 0$ (every basic variable is strictly positive), the rule is clean:
 
-- **Negative reduced cost exists** ($\tilde{c}_j < 0$ for some $j \in \mathcal{N}$): pick such a $j$ and increment $v_j$. As $v_j$ increases from zero, the basic variables $v_\mathcal{B}$ adjust according to $v_\mathcal{B} = A_\mathcal{B}^{-1} b - A_\mathcal{B}^{-1} A_{\cdot j} v_j$. Some of them decrease. Keep going until the first basic variable hits zero—that's your new vertex. The entering variable $j$ joins the basis; the variable that hit zero leaves.
-- **All reduced costs non-negative** ($\tilde{c}_\mathcal{N} \ge 0$): halt and declare optimality. At the current vertex $x_\mathcal{N} = 0$, and since $x_\mathcal{N} \ge 0$ throughout the polytope, any feasible movement can only increase the objective (the reduced costs are non-negative). The current vertex is optimal.
+- **Negative reduced cost exists** ($\tilde{c}_j < 0$ for some $j \in \mathcal{N}$): pick such a $j$ and increment $v_j$. As $v_j$ increases from zero, the basic variables $v_{\mathcal{B}}$ adjust according to $v_{\mathcal{B}} = A_{\mathcal{B}}^{-1} b - A_{\mathcal{B}}^{-1} A_{\cdot j} v_j$. Some of them decrease. Keep going until the first basic variable hits zero—that's your new vertex. The entering variable $j$ joins the basis; the variable that hit zero leaves.
+- **All reduced costs non-negative** ($\tilde{c}_{\mathcal{N}} \ge 0$): halt and declare optimality. At the current vertex $x_{\mathcal{N}} = 0$, and since $x_{\mathcal{N}} \ge 0$ throughout the polytope, any feasible movement can only increase the objective (the reduced costs are non-negative). The current vertex is optimal.
 
 The increment is guaranteed to be positive because all basic variables started strictly positive and move continuously.
 
@@ -71,7 +71,7 @@ Without a careful pivoting rule, Simplex can revisit the same sequence of bases 
 **Bland's rule** resolves this. Given multiple choices:
 
 1. **Entering variable $j$:** among all $j \in \mathcal{N}$ with $\tilde{c}_j < 0$, pick the one with the smallest index.
-2. **Leaving variable $k$:** compute $b' = A_\mathcal{B}^{-1} b$, $a' = A_\mathcal{B}^{-1} A_{\cdot j}$, and $q_i = b'_i / a'_{ij}$ for all $i$ with $a'_{ij} > 0$. Among those minimising $q_i$, pick the smallest index.
+2. **Leaving variable $k$:** compute $b' = A_{\mathcal{B}}^{-1} b$, $a' = A_{\mathcal{B}}^{-1} A_{\cdot j}$, and $q_i = b'_i / a'_{ij}$ for all $i$ with $a'_{ij} > 0$. Among those minimising $q_i$, pick the smallest index.
 
 Bland's rule is provably anti-cycling—Simplex terminates in finitely many steps.
 
@@ -83,14 +83,14 @@ Bland's rule is provably anti-cycling—Simplex terminates in finitely many step
 Define the **shadow price vector**
 
 $$
-y = (A_\mathcal{B}^{-1})^\top c_\mathcal{B}.
+y = (A_{\mathcal{B}}^{-1})^\top c_{\mathcal{B}}.
 $$ {#eq-shadow-price}
 
 This vector changes as the basis changes during Simplex. At the current vertex $v$:
 
 **Claim.** $c^\top v = b^\top y$.
 
-*Proof.* Since $A_\mathcal{B} v_\mathcal{B} = b$, we have $v_\mathcal{B} = A_\mathcal{B}^{-1} b$. Then $c^\top v = c_\mathcal{B}^\top v_\mathcal{B} = c_\mathcal{B}^\top A_\mathcal{B}^{-1} b = (A_\mathcal{B}^{-1})^\top c_\mathcal{B})^\top b = y^\top b = b^\top y$. $\square$
+*Proof.* Since $A_{\mathcal{B}} v_{\mathcal{B}} = b$, we have $v_{\mathcal{B}} = A_{\mathcal{B}}^{-1} b$. Then $c^\top v = c_{\mathcal{B}}^\top v_{\mathcal{B}} = c_{\mathcal{B}}^\top A_{\mathcal{B}}^{-1} b = (A_{\mathcal{B}}^{-1})^\top c_{\mathcal{B}})^\top b = y^\top b = b^\top y$. $\square$
 
 This already looks like strong duality—primal cost equals dual cost—except we need $y$ to be dual-feasible. The claim says that at *every* intermediate vertex, the primal objective equals $b^\top y$. But $y$ is not necessarily dual-feasible during the algorithm—it becomes feasible only at termination.
 
@@ -104,10 +104,10 @@ $$ {#eq-dual}
 
 Define the **dual slack** $r = c - A^\top y$. By the definition of $y$:
 
-- $r_\mathcal{B} = 0$ (direct computation).
-- $r_\mathcal{N} = \tilde{c}_\mathcal{N}$ (the reduced cost).
+- $r_{\mathcal{B}} = 0$ (direct computation).
+- $r_{\mathcal{N}} = \tilde{c}_{\mathcal{N}}$ (the reduced cost).
 
-Simplex halts when $\tilde{c}_\mathcal{N} \ge 0$, which is exactly $r \ge 0$—dual feasibility. At that moment both primal and dual are feasible with equal objective values, so strong duality holds.
+Simplex halts when $\tilde{c}_{\mathcal{N}} \ge 0$, which is exactly $r \ge 0$—dual feasibility. At that moment both primal and dual are feasible with equal objective values, so strong duality holds.
 
 ::: {.callout-important title="Strong duality (LP)"}
 If the primal LP has an optimal solution, so does the dual, and $\min c^\top x = \max b^\top y$.
@@ -148,7 +148,7 @@ Think of $x_i$ as the quantity of resource $i$ used and $r_i$ as the "surplus pr
 
 ### Iteration count
 
-Each Simplex pivot takes polynomial time. The number of pivots is at most the number of vertices. A vertex corresponds to a choice of $m$ columns from $n$, so the crude bound is $\binom{n}{m}$. Not every choice yields a feasible vertex (the solution $A_\mathcal{B}^{-1} b$ may have negative entries), so the true bound is tighter.
+Each Simplex pivot takes polynomial time. The number of pivots is at most the number of vertices. A vertex corresponds to a choice of $m$ columns from $n$, so the crude bound is $\binom{n}{m}$. Not every choice yields a feasible vertex (the solution $A_{\mathcal{B}}^{-1} b$ may have negative entries), so the true bound is tighter.
 
 ::: {.callout-note title="McMullen's upper bound theorem (1970)"}
 The maximum number of vertices of a polytope defined by $n$ inequalities in $m$ dimensions is
@@ -344,9 +344,9 @@ The iteration count is $O(\sqrt{m}\, L)$, each involving a constant number of $n
 
 **Strong duality**
 
-- Shadow price: $y = (A_\mathcal{B}^{-1})^\top c_\mathcal{B}$.
+- Shadow price: $y = (A_{\mathcal{B}}^{-1})^\top c_{\mathcal{B}}$.
 - At any vertex: $c^\top v = b^\top y$.
-- At termination: reduced cost $\tilde{c}_\mathcal{N} \ge 0 \Rightarrow$ dual feasibility $\Rightarrow$ strong duality.
+- At termination: reduced cost $\tilde{c}_{\mathcal{N}} \ge 0 \Rightarrow$ dual feasibility $\Rightarrow$ strong duality.
 
 **Complementary slackness**
 
