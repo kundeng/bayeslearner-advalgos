@@ -1,0 +1,465 @@
+---
+title: "Faster Max Flow: Capacity Scaling and Blocking Flows"
+subtitle: "COMPSCI 224 Lecture 21 — Fall 2014"
+author: "Companion notes by Kun Deng"
+date: today
+abstract: |
+  Ford–Fulkerson's pseudo-polynomial $O(mf^*)$ running time is unsatisfying: it can be
+  exponential in the input size.  Two ideas fix this.  *Capacity scaling* processes
+  capacities bit-by-bit from MSB to LSB, reducing general capacities to $O(\log U)$
+  near-unit-capacity phases and achieving $O(m^2 \log U)$ time.  *Blocking flows*
+  (Dinic, 1970) augment along *all* shortest paths at once, guaranteeing that the
+  shortest-path distance increases after each phase; at most $n$ phases suffice.
+  Combined, these yield $O(mn)$ for unit-capacity graphs, $O(mn^2)$ for general
+  capacities, and $O(mn \log n)$ via link-cut trees—close to the state-of-the-art $O(mn)$
+  that took until 2013 to achieve.
+---
+
+## Why this lecture matters
+
+Ford–Fulkerson is conceptually clean but computationally naïve.  This lecture introduces the two main levers for speeding it up—*scaling* (control the magnitudes) and *blocking flows* (exploit shortest-path structure)—and shows how they compose.  Every modern combinatorial max-flow algorithm builds on one or both of these ideas.  The analysis also demonstrates a recurring theme: combining a *phase count* bound with a *per-phase cost* bound, optimising their product.
+
+::: {.callout-tip title="30-second story"}
+1. Ford–Fulkerson is pseudo-polynomial ($O(mf^*)$): the running time depends on capacity magnitudes, not just the graph size.
+2. Capacity scaling shifts in capacity bits MSB-first, solving $O(\log U)$ near-unit-capacity flow problems; total time $O(m^2 \log U)$.
+3. Blocking flows saturate at least one edge on *every* admissible $s$-$t$ path, forcing the shortest-path distance to strictly increase.
+4. At most $n$ blocking-flow phases suffice; finding one takes $O(m)$ in unit-capacity graphs and $O(mn)$ in general.
+5. In unit-capacity graphs, a tighter analysis gives $O(\sqrt{m})$ phases, yielding $O(m^{3/2})$ max flow.
+6. For bipartite matching, the same framework gives $O(m\sqrt{n})$—the Hopcroft–Karp bound.
+:::
+
+
+## Polynomial-time classifications {#sec-poly-classes}
+
+Before diving in, clarify the three flavours of "polynomial":
+
+| Class | Running time | Example |
+|-------|-------------|---------|
+| **Strongly polynomial** | $\text{poly}(m, n)$ | Does not depend on capacities at all |
+| **Weakly polynomial** | $\text{poly}(m, n, \log U)$ | Polynomial in the *bit length* of the input |
+| **Pseudo-polynomial** | $\text{poly}(m, n, U)$ | Polynomial in the *numeric value* of capacities |
+
+Ford–Fulkerson is pseudo-polynomial.  The knapsack DP ($O(nW)$) is another classic example.  The distinction matters: $U$ can be exponentially larger than $\log U$.
+
+::: {.callout-warning}
+"Pseudo-polynomial" sounds almost respectable, but it means the algorithm can take exponentially long on inputs with large numeric values.  A capacity of $2^{30}$ takes only 30 bits to write down, but Ford–Fulkerson might need $2^{30}$ augmenting-path iterations.
+:::
+
+
+## State of the art (as of 2014) {#sec-state-of-art}
+
+For context, here is where flow algorithms stood at the time of this lecture:
+
+**Strongly polynomial:**
+
+- $O(mn)$ — Orlin (STOC 2013).  Removed the last $\log n$ factor from the 1983 bound of $O(mn \log n)$ by Sleator and Tarjan.
+
+**Weakly polynomial:**
+
+- $O(m \cdot \min(m^{1/2}, n^{2/3}) \cdot \log(n^2/m) \cdot \log U)$ — Goldberg and Rao (1998).
+- $\tilde{O}(m\sqrt{n} \cdot \log^2 U)$ — Lee and Sidford (FOCS 2014), via interior point with reweighted barriers.
+
+**Unit-capacity graphs:**
+
+- $O(m \cdot \min(m^{1/2}, n^{2/3}))$ — Even and Tarjan (1975) / Karzanov (1973).
+- $O(m^{10/7})$ — Madry (FOCS 2013).
+
+::: {.callout-note title="Aside (mine, not the lecturer's)"}
+Since 2014, there has been dramatic progress.  Chen, Kyng, Liu, Peng, Probst Gutenberg, and Sach (FOCS 2022) achieved $m^{1+o(1)}$ time for max flow—almost linear!—using interior point methods with dynamic data structures.  The combinatorial algorithms in this lecture remain important for understanding the structural theory.
+:::
+
+
+## Capacity scaling {#sec-scaling}
+
+### The idea
+
+Represent each capacity $c_e$ in binary using $\lceil \log_2 U \rceil$ bits.  Process the bits from the most significant to the least significant.  In each of the $O(\log U)$ *phases*:
+
+1. **Double** all current capacities $c'_e$ and flows $f_e$.
+2. **Shift in** the next bit: add the $k$-th bit of $c_e$ to $c'_e$ for each edge $e$.
+3. **Augment** $f$ until it is a max flow for the current capacities $c'$.
+
+<!-- TikZ: three rows showing binary capacity bits being shifted in for three edges; each row: leading zeros, then bits revealed left-to-right, with the "current window" highlighted; below, a bar chart showing c'_e growing phase by phase -->
+
+### Pseudocode
+
+```python
+def capacity_scaling(G, c, s, t):
+    """Capacity scaling for max flow.
+
+    G : directed graph (adjacency list)
+    c : dict mapping edge -> integer capacity
+    s, t : source and sink
+    """
+    f = {e: 0 for e in G.edges}      # zero flow
+    c_prime = {e: 0 for e in G.edges} # working capacities
+    L = max(c.values()).bit_length()   # number of bits
+
+    for k in range(L - 1, -1, -1):    # MSB to LSB
+        # Step 1: double
+        for e in G.edges:
+            f[e] *= 2
+            c_prime[e] *= 2
+        # Step 2: shift in bit k
+        for e in G.edges:
+            c_prime[e] += (c[e] >> k) & 1
+        # Step 3: augment to max flow
+        ford_fulkerson(G, c_prime, f, s, t)
+
+    return f
+```
+
+### Correctness
+
+**Invariant:** at the start of each phase, $f$ is a max flow for the current capacities $c'$.
+
+- **Base case:** $f = 0$ is a max flow when all $c' = 0$.
+- **After doubling:** $f$ was a max flow, so some min cut $C$ was saturated (zero residual capacity across $C$).  After doubling both capacities and flows, $C$ still has zero residual capacity.  So $f$ is still a max flow.
+- **After shifting in a bit:** $f$ remains *feasible* (capacities only increased), but may no longer be *maximum*.  Ford–Fulkerson augments it to the new max flow.
+
+### Running time
+
+The key question: how many augmenting paths does Ford–Fulkerson need in Step 3?
+
+Before shifting in the new bit, some cut $C$ had zero residual capacity.  The new bit adds at most 1 capacity per edge to $C$.  Since $|C| \leq m$, the new min-cut capacity is at most $m$.  Therefore, the new max flow exceeds the old max flow by at most $m$, so Ford–Fulkerson needs at most $m$ augmentations.
+
+Each augmentation takes $O(m)$ time (find a path via BFS/DFS, push flow).  There are $O(\log U)$ phases.
+
+$$
+\text{Total time} = O(m^2 \log U)
+$$ {#eq-scaling-time}
+
+::: {.callout-important}
+Capacity scaling is **weakly polynomial**: the running time depends on $\log U$ (the bit length of capacities), not $U$ itself.  This is an exponential improvement over Ford–Fulkerson's $O(mf^*) = O(m \cdot nU)$ in the worst case.
+:::
+
+
+## Blocking flows {#sec-blocking}
+
+### Level graphs and admissible edges
+
+Given a residual graph $G_f$, define:
+
+- **Level** of vertex $v$: the shortest-path distance $\ell(v)$ from $s$ to $v$ in $G_f$ (using BFS).
+- **Admissible edge**: an edge $(u, v)$ with $\ell(v) = \ell(u) + 1$.  It lies on *some* shortest $s$-$t$ path.
+- **Level graph** $L$: the subgraph of $G_f$ containing only admissible edges.
+
+<!-- TikZ: level graph with s at level 0, vertices arranged in columns by level, edges only between adjacent levels, with a few "non-admissible" dashed edges (backward or skipping levels) shown outside the level graph for contrast -->
+
+The level graph $L$ is a DAG (directed acyclic graph): every edge goes from level $\ell$ to level $\ell + 1$, so no cycles are possible.
+
+::: {.callout-tip}
+Think of the level graph as a "layered cake" with $s$ on the left and $t$ on the right.  Every edge points one layer to the right.  Shortest $s$-$t$ paths in $G_f$ correspond to $s$-$t$ paths in $L$.
+:::
+
+### Definition of a blocking flow
+
+A **blocking flow** $f'$ in the level graph $L$ is an admissible flow (i.e., it decomposes into admissible $s$-$t$ paths) such that *every* admissible $s$-$t$ path has at least one edge saturated by $f'$.
+
+A blocking flow is *not* necessarily a max flow.  It just blocks all *shortest* augmenting paths.
+
+<!-- TikZ: small level graph with 4 levels; show a blocking flow (green highlighted paths) that saturates key bottleneck edges; show one non-admissible s-t path (dashed, going backwards through a level) that still exists but is longer -->
+
+::: {.callout-caution}
+A max flow is always a blocking flow, but a blocking flow may not be a max flow.  Consider the unit-capacity graph $s \to a$, $s \to b$, $a \to t$, $b \to t$, $a \to b$ where all edges have capacity 1.  The flow sending 1 unit along $s \to a \to b \to t$ blocks both admissible paths ($s \to a \to t$ loses edge $a$, $s \to b \to t$ loses $b$) and is a blocking flow of value 1, but the max flow is 2.
+:::
+
+### The key claim: distance strictly increases
+
+::: {.callout-important title="Blocking flow distance lemma"}
+After augmenting along a blocking flow and forming the new residual graph, the shortest-path distance from $s$ to $t$ **strictly increases**.
+:::
+
+**Proof.**  Let $d = d_L(s,t)$ be the shortest-path distance before augmentation.  In the new residual graph $G_{f'}$, the possible edges are:
+
+1. **Forward edges from $L$** (surviving admissible edges with leftover capacity).
+2. **Reverse edges** from $L$ (edges of $L$ that carried flow, now reversed).
+3. **Non-admissible edges** from $G_f$ that were not in $L$—these go backward (decreasing level) or stay within the same level.
+
+None of types 2 or 3 help decrease the distance from $s$ to $t$: reverse edges go from level $\ell+1$ back to level $\ell$, and non-admissible edges do not advance toward $t$.  So any $s$-$t$ path in the new residual graph that uses only forward $L$-edges has length $\geq d$.
+
+But can the distance stay *exactly* $d$?  A length-$d$ path would use only forward $L$-edges, meaning it is an admissible path in $L$.  By definition of blocking flow, at least one edge on this path is saturated—so that edge has zero residual capacity and does not appear in $G_{f'}$.  Contradiction.
+
+Therefore $d_{L'}(s,t) > d_L(s,t)$.  $\square$
+
+
+### Dinic's algorithm
+
+Dinic (1970) builds on the blocking flow lemma:
+
+1. Compute the level graph $L$ of the current residual graph $G_f$ (via BFS from $s$).
+2. Find a blocking flow $f'$ in $L$.
+3. Augment: $f \leftarrow f + f'$.
+4. Repeat until $t$ is unreachable from $s$.
+
+Since the shortest-path distance increases by at least 1 each phase and cannot exceed $n-1$ (beyond which $s$ and $t$ are disconnected), there are **at most $n-1$ phases**.
+
+$$
+\text{Total time} = O(n \times \text{time per blocking flow})
+$$ {#eq-dinic-phases}
+
+
+## Finding a blocking flow {#sec-find-blocking}
+
+### Unit-capacity case: modified DFS {#sec-blocking-unit}
+
+The algorithm maintains a "finger" on a current vertex $v$, starting at $s$.  Three operations:
+
+- **Advance:** Move from $v$ to some neighbour $u$ along an admissible edge $(v, u)$ in $L$.
+- **Retreat:** If $v$ has no outgoing admissible edge (dead end), step back to the predecessor $w$ and *delete* edge $(w, v)$ from $L$.  If $v = s$, terminate.
+- **Augment:** If $v = t$, add the $s$-$t$ path to the blocking flow $f'$ (with the minimum capacity along the path), delete all zero-capacity edges, and return the finger to $s$.
+
+```python
+def find_blocking_flow_unit(L, s, t):
+    """Find a blocking flow in a unit-capacity level graph.
+
+    L : level graph (adjacency list, all capacities 1)
+    s, t : source and sink
+    Returns a list of augmenting paths.
+    """
+    paths = []
+    path = [s]
+
+    while True:
+        v = path[-1]
+        if v == t:
+            # Augment: record path, delete its edges
+            paths.append(list(path))
+            for i in range(len(path) - 1):
+                L.remove_edge(path[i], path[i + 1])
+            path = [s]
+        elif L.out_degree(v) > 0:
+            # Advance: pick any outgoing admissible edge
+            u = next(L.neighbors(v))
+            path.append(u)
+        elif v == s:
+            break  # no more paths
+        else:
+            # Retreat: delete incoming edge, step back
+            w = path[-2]
+            L.remove_edge(w, v)
+            path.pop()
+
+    return paths
+```
+
+**Running time:** Each edge is examined at most a constant number of times—once when advanced on, once when either augmented through (and deleted) or retreated from (and deleted).  Total: $O(m)$.
+
+### General-capacity case {#sec-blocking-general}
+
+The same advance/retreat/augment structure works.  The analysis changes because augmenting saturates only the bottleneck edge (minimum capacity), not all edges.
+
+| Operation | Count | Cost per operation | Total |
+|-----------|------:|-------------------:|------:|
+| **Augment** | $\leq m$ | $O(n)$ (path length) | $O(mn)$ |
+| **Retreat** | $\leq m$ | $O(1)$ | $O(m)$ |
+| **Advance** | $\leq mn$ | $O(1)$ | $O(mn)$ |
+
+Why at most $m$ augments?  Each augment saturates (and deletes) at least one edge.  Why at most $mn$ advances?  After every $n$ consecutive advances, the finger either reaches $t$ (triggering an augment) or encounters a dead end (triggering a retreat).  Either way, an edge is deleted.  So the number of advance "epochs" of length $n$ is at most $m$.
+
+$$
+\text{Blocking flow in general capacities:} \quad O(mn)
+$$ {#eq-blocking-general}
+
+::: {.callout-note}
+The bottleneck is advances.  Each advance is cheap ($O(1)$), but there can be many of them because the path can be as long as $n$ before an augmentation clears it.  Link-cut trees (Sleator–Tarjan, 1983) compress path operations to $O(\log n)$ amortised, reducing the blocking-flow time to $O(m \log n)$.
+:::
+
+
+## Putting it all together {#sec-summary-bounds}
+
+### Dinic's algorithm: general capacities
+
+$n$ phases $\times$ $O(mn)$ per blocking flow:
+
+$$
+O(mn^2)
+$$
+
+### Dinic's algorithm: unit capacities
+
+$O(m)$ per blocking flow, but the number of phases can be bounded more tightly.
+
+After $d$ phases, the shortest-path distance from $s$ to $t$ is at least $d$.  Any max flow decomposes into augmenting paths, each of length $\geq d$.  Since paths are edge-disjoint in unit-capacity graphs, there are at most $m/d$ paths, so the residual max-flow value is at most $m/d$.  Ford–Fulkerson would find the remaining flow in $m/d$ more iterations.
+
+The total number of phases is at most $d + m/d$, minimised at $d = \sqrt{m}$:
+
+$$
+\text{Unit capacity:} \quad O(\sqrt{m}) \text{ phases} \times O(m) \text{ per phase} = O(m^{3/2})
+$$ {#eq-unit-flow}
+
+More precisely, the bound is $O(m \cdot \min(\sqrt{m},\; n))$ since the phase count is also at most $n$.
+
+<!-- TikZ: plot showing total phases = d + m/d as a function of d, with the minimum at d = √m marked; annotate the two regimes: "blocking flow phases dominate" on the left, "residual augmentation dominates" on the right -->
+
+### Bipartite matching
+
+A bipartite graph $G = (L \cup R, E)$ with $|L| = |R| = n/2$ reduces to max flow: add $s$ connected to all of $L$, add $t$ connected from all of $R$, all edges unit capacity.
+
+For this graph, a tighter analysis gives at most $d + n/d$ phases (since the max flow is at most $n/2$, and paths have length $\geq d$).  Setting $d = \sqrt{n}$:
+
+$$
+\text{Bipartite matching:} \quad O(\sqrt{n}) \text{ phases} \times O(m) \text{ per phase} = O(m\sqrt{n})
+$$ {#eq-bipartite}
+
+This is the Hopcroft–Karp (1973) bound.  Ford–Fulkerson alone gives $O(mn)$; blocking flows shave a $\sqrt{n}$ factor.
+
+### With link-cut trees
+
+Sleator and Tarjan's link-cut trees (1983) reduce each blocking-flow computation from $O(mn)$ to $O(m \log n)$, yielding:
+
+$$
+O(mn \log n) \quad \text{(general capacities)}
+$$ {#eq-lct-flow}
+
+Orlin (STOC 2013) removed the $\log n$ to achieve the current best strongly-polynomial bound of $O(mn)$.
+
+### Combined with scaling
+
+Replace Ford–Fulkerson's augmentation step inside capacity scaling with Dinic's blocking-flow algorithm.  Each scaling phase needs at most $m$ additional flow, and Dinic finds that in $O(\min(\sqrt{m}, n))$ blocking-flow phases (each $O(m)$ in unit capacity, or $O(m \log n)$ with link-cut trees).  This can further improve bounds in certain parameter regimes.
+
+
+## Cheat sheet
+
+::: {.callout-important title="Lecture 21 — cheat sheet"}
+
+**Capacity scaling**
+
+- Process capacity bits MSB → LSB.
+- Each of $O(\log U)$ phases: double capacities and flows, shift in next bit, augment.
+- After shifting, min-cut increases by at most $m$ → at most $m$ augmentations.
+- Total: $O(m^2 \log U)$ (weakly polynomial).
+
+**Blocking flows (Dinic's algorithm)**
+
+- Level graph $L$: admissible edges only (shortest-path edges).
+- Blocking flow: saturates $\geq 1$ edge on every admissible $s$-$t$ path.
+- Key lemma: after augmenting by a blocking flow, $d_L(s,t)$ strictly increases.
+- $\leq n$ phases, since distance bounded by $n$.
+
+**Time per blocking flow:**
+
+| Setting | Time | Total max flow |
+|---------|------|---------------|
+| Unit capacity | $O(m)$ | $O(m \cdot \min(\sqrt{m}, n))$ |
+| General, naïve | $O(mn)$ | $O(mn^2)$ |
+| General, link-cut trees | $O(m \log n)$ | $O(mn \log n)$ |
+
+**Special cases:**
+
+- Unit capacity: $O(m^{3/2})$ via $\sqrt{m}$ phases.
+- Bipartite matching: $O(m\sqrt{n})$ via $\sqrt{n}$ phases (Hopcroft–Karp).
+
+**Polynomial-time taxonomy:**
+
+| Type | Bound | Example |
+|------|-------|---------|
+| Pseudo-polynomial | $\text{poly}(m, U)$ | Ford–Fulkerson: $O(mf^*) = O(mnU)$ |
+| Weakly polynomial | $\text{poly}(m, \log U)$ | Scaling: $O(m^2 \log U)$ |
+| Strongly polynomial | $\text{poly}(m)$ | Dinic: $O(mn^2)$ |
+
+:::
+
+
+## FAQ — questions students actually asked
+
+**Q: In capacity scaling, are we really in the "unit capacity" case after shifting in a bit?**
+
+Not exactly.  After doubling, existing edges may have residual capacities larger than 1.  The point is that the *increase* in the max flow is at most $m$ (because the min cut gained at most $m$ capacity from the new bits).  So Ford–Fulkerson needs at most $m$ augmentations—same as if you had a unit-capacity graph with $m$ edges.
+
+**Q: Do capacities have to be integers for scaling to work?**
+
+Yes, as presented.  With rational capacities, clear all denominators first (multiply by the LCM).  Without integrality, "$\log U$" doesn't have a clean meaning—you would need to normalize by the ratio of the largest to smallest capacity.
+
+**Q: In the blocking-flow DFS, can we visit a vertex we already used in a previous augmenting path?**
+
+Yes.  The level graph is a DAG (edges go strictly from level $\ell$ to $\ell+1$), so cycles are impossible.  But a vertex can appear in multiple augmenting paths.  After each augment, we return the finger to $s$ and start a fresh DFS.  Deleted edges are gone forever, but surviving edges remain available.
+
+**Q: Why can't a blocking flow be a max flow?  Doesn't it block everything?**
+
+It blocks all *admissible* (shortest) paths, not all paths.  Non-admissible edges—edges that skip levels or go backward—may still form longer augmenting paths in the residual graph.  That is why Dinic's algorithm needs multiple phases: each blocking flow eliminates all shortest-path augmentations, but longer paths may open up.
+
+**Q: How does the $d + m/d$ analysis work for bounding the number of phases?**
+
+After $d$ phases, shortest-path distance $\geq d$.  Decompose any max flow into edge-disjoint paths (in unit-capacity graphs).  Each path has length $\geq d$, and there are at most $m$ edges total, so at most $m/d$ paths.  The residual flow is at most $m/d$, handled in at most $m/d$ more single-path augmentations.  Total phases $\leq d + m/d$, minimised at $d = \sqrt{m}$.
+
+
+## Further reading
+
+- **Dinic, E. A.** "Algorithm for solution of a problem of maximum flow in networks with power estimation." *Soviet Mathematics Doklady*, 11:1277–1280, 1970.  The original blocking-flow paper.
+- **Sleator, D. D. and Tarjan, R. E.** "A data structure for dynamic trees." *JCSS*, 26(3):362–391, 1983.  Link-cut trees, reducing blocking-flow time to $O(m \log n)$.
+- **Even, S. and Tarjan, R. E.** "Network flow and testing graph connectivity." *SIAM Journal on Computing*, 4(4):507–518, 1975.  The $O(m \cdot \min(m^{1/2}, n^{2/3}))$ bound for unit-capacity graphs.
+- **Orlin, J. B.** "Max flows in $O(nm)$ time, or better." *STOC 2013*.  The current best strongly-polynomial bound.
+- **Goldberg, A. V. and Rao, S.** "Beyond the flow decomposition barrier." *JACM*, 45(5):783–797, 1998.  The binary-length blocking-flow approach.
+- **Chen, L., Kyng, R., Liu, Y. P., Peng, R., Probst Gutenberg, M., and Sach, M.** "Maximum flow and minimum-cost flow in almost-linear time." *FOCS 2022*.  The near-linear-time breakthrough. <!-- TODO: verify exact author list -->
+
+
+## Try it yourself
+
+1. **Scaling trace.**  Run capacity scaling by hand on a triangle graph $s \to a$ (cap 5), $s \to b$ (cap 3), $a \to b$ (cap 2), $a \to t$ (cap 4), $b \to t$ (cap 6).  Show the state of $c'$, $f$, and $G_f$ after each bit is shifted in.
+
+2. **Blocking flow vs. max flow.**  Construct a graph where the blocking flow has value $k$ but the max flow has value $2k$.  What is the smallest such graph (fewest vertices)?
+
+3. **Phase-count bound.**  Prove that in a graph where all edges have capacity at most $C$, the number of blocking-flow phases needed is at most $\min(n, mC / f^*)$.  (*Hint:* the residual max flow drops by at least 1 per phase.)
+
+4. **Implement Dinic's algorithm.**  Code Dinic's algorithm (BFS for level graph + DFS for blocking flow) and test it on a random graph with 100 vertices and edge capacities uniform in $[1, 100]$.
+
+```python
+from collections import deque
+
+def bfs_level_graph(graph, cap, s, t, level):
+    """BFS from s, fill level[v] = shortest distance from s.
+    Returns True if t is reachable."""
+    for v in range(len(graph)):
+        level[v] = -1
+    level[s] = 0
+    queue = deque([s])
+    while queue:
+        u = queue.popleft()
+        for v in graph[u]:
+            if level[v] == -1 and cap[u][v] > 0:
+                level[v] = level[u] + 1
+                queue.append(v)
+    return level[t] != -1
+
+def dfs_blocking(graph, cap, level, u, t, pushed):
+    """DFS to find augmenting path and push flow."""
+    if u == t:
+        return pushed
+    for v in graph[u]:
+        if level[v] == level[u] + 1 and cap[u][v] > 0:
+            d = dfs_blocking(graph, cap, level, v, t, min(pushed, cap[u][v]))
+            if d > 0:
+                cap[u][v] -= d
+                cap[v][u] += d
+                return d
+    level[u] = -1  # mark dead end
+    return 0
+
+def dinic(n, edges, s, t):
+    """Dinic's max flow algorithm.
+
+    n : number of vertices
+    edges : list of (u, v, capacity) tuples
+    s, t : source and sink
+    Returns max flow value.
+    """
+    graph = [[] for _ in range(n)]
+    cap = [[0] * n for _ in range(n)]
+    for u, v, c in edges:
+        graph[u].append(v)
+        graph[v].append(u)
+        cap[u][v] += c
+
+    flow = 0
+    level = [0] * n
+    while bfs_level_graph(graph, cap, s, t, level):
+        while True:
+            pushed = dfs_blocking(graph, cap, level, s, t, float('inf'))
+            if pushed == 0:
+                break
+            flow += pushed
+    return flow
+```
+
+5. **Hopcroft–Karp.**  Adapt your Dinic implementation to find a maximum matching in a bipartite graph.  Verify on a random bipartite graph with 50 vertices on each side that the number of BFS phases is $O(\sqrt{n})$.

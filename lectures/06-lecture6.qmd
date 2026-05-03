@@ -1,0 +1,659 @@
+---
+title: "Amortized Analysis, Binomial Heaps, and Fibonacci Heaps"
+subtitle: "COMPSCI 224 Lecture 6 — Fall 2014"
+author: "Companion notes by Kun Deng"
+date: today
+abstract: |
+  We develop the potential function method for proving amortized bounds, then
+  apply it twice: first to binomial heaps (constant amortized insertion, $O(\log n)$
+  worst-case delete-min), then to Fibonacci heaps (constant amortized insertion
+  *and* decrease-key, $O(\log n)$ amortized delete-min). The key insight behind
+  Fibonacci heaps is strategic laziness — defer consolidation to delete-min, and
+  use cascading cuts to prevent trees from becoming too shallow.
+engine: knitr
+---
+
+## Why this lecture matters
+
+Fibonacci heaps sit at the heart of the fastest known algorithms for shortest
+paths (Dijkstra), minimum spanning trees (Prim), and network flow. Understanding
+*how* they achieve their bounds — through the interplay of laziness and controlled
+degradation — teaches you a design pattern applicable far beyond heaps: let
+cheap operations accumulate structural debt, and repay it during the expensive
+operation that already has to examine the structure.
+
+::: {.callout-tip title="30-second story"}
+1. Amortized analysis asks: what is the *total* cost of a sequence of
+   operations, divided fairly among them?
+2. The potential function method formalizes "structural debt" — cheap operations
+   increase potential, expensive ones discharge it.
+3. Binomial heaps achieve constant amortized insertion by treating the forest
+   as a binary number and insertion as incrementing.
+4. Fibonacci heaps go further: insertion just appends to a linked list
+   (consolidation is deferred to delete-min), and decrease-key cuts the node
+   out of its tree in $O(1)$ time.
+5. Cascading cuts (cut a node when it loses a *second* child) prevent trees
+   from becoming too sparse, ensuring rank-$k$ trees have $\ge F_{k+2}$ nodes.
+6. The potential $\Phi = t(H) + 2m(H)$ (trees + twice marked nodes) makes the
+   bookkeeping work out exactly.
+:::
+
+## Amortized analysis and the potential function method {#sec-amortized}
+
+### The idea {#sec-amortized-idea}
+
+Worst-case analysis can be pessimistic. A data structure might have one expensive
+operation that only happens after many cheap ones — charging the full worst-case
+cost to every operation overstates the true cost of any realistic sequence.
+
+Suppose a data structure supports operations $A, B, C$. Their **amortized
+costs** are $\hat{t}_A, \hat{t}_B, \hat{t}_C$ if *every* interleaving of $n_A$
+$A$-operations, $n_B$ $B$-operations, and $n_C$ $C$-operations has total
+actual cost at most:
+
+$$
+n_A \hat{t}_A + n_B \hat{t}_B + n_C \hat{t}_C.
+$$ {#eq-amortized-def}
+
+An individual operation may cost much more than its amortized bound (even $O(n)$),
+as long as the *aggregate* over any sequence respects the sum. Amortized bounds
+are deterministic — no probability is involved. They are strictly stronger than
+"expected" bounds (which could have rare bad sequences) but weaker than worst-case
+bounds per operation.
+
+### The potential function method {#sec-potential-method}
+
+Define a **potential function** $\Phi$ that maps each state $S$ of the data
+structure to a non-negative real number, with $\Phi(S_0) = 0$ for the initial
+(empty) state.
+
+After $k$ operations with actual costs $t_1, \ldots, t_k$ producing states
+$S_0, S_1, \ldots, S_k$, define the **amortized cost** of operation $i$ as:
+
+$$
+\hat{t}_i = t_i + \Phi(S_i) - \Phi(S_{i-1}).
+$$ {#eq-amortized-cost}
+
+Summing over all operations telescopes the potential terms:
+
+$$
+\sum_{i=1}^k \hat{t}_i = \sum_{i=1}^k t_i + \Phi(S_k) - \underbrace{\Phi(S_0)}_{=\,0}
+  \ge \sum_{i=1}^k t_i,
+$$ {#eq-telescope}
+
+since $\Phi(S_k) \ge 0$. The sum of amortized costs *upper-bounds* the total
+actual cost. If we can show that each operation type has amortized cost at most
+some target $\hat{t}$, then any sequence of $k$ operations costs at most
+$k\hat{t}$ in total.
+
+::: {.callout-tip title="Bank account intuition"}
+Think of $\Phi(S)$ as the balance of a bank account attached to the data
+structure.
+
+- **Cheap operations** (like insertion) may deposit money: they do little actual
+  work but increase $\Phi$, so their amortized cost $= \text{actual work} + \text{deposit}$ is slightly more than what they truly cost.
+- **Expensive operations** (like delete-min) withdraw money: they do a lot of
+  actual work but decrease $\Phi$, so their amortized cost $= \text{actual work} - \text{withdrawal}$ is much less than what they truly cost.
+
+As long as the bank balance never goes negative ($\Phi \ge 0$ always), the total
+deposits cover the total withdrawals, and the amortized costs are a valid upper
+bound.
+:::
+
+### Designing a potential function {#sec-design-potential}
+
+There is no unique "correct" potential function. The art is engineering one that:
+
+1. Is always non-negative and zero at the start.
+2. Increases by a controlled amount during cheap operations.
+3. Decreases by *at least* the excess actual cost during expensive operations.
+
+In practice, you look at what "structural mess" the cheap operations create
+(more trees, more marked nodes, more items in a buffer) and define $\Phi$ to
+measure that mess. The expensive operation cleans up the mess — its actual cost
+is proportional to the mess size, but the potential drop cancels it.
+
+## Heaps: the landscape {#sec-heap-landscape}
+
+A **heap** (priority queue) stores $n$ comparable items and supports:
+
+| Operation | Meaning |
+|-----------|---------|
+| `insert(x)` | Add item $x$ to the collection |
+| `delete-min()` | Return and remove the item with the smallest key |
+| `decrease-key(p, k)` | Reduce the key at pointer $p$ to new value $k \le$ current key |
+
+These three operations are exactly what Dijkstra's single-source shortest path
+algorithm needs. On a graph with $n$ vertices and $m$ edges (non-negative
+weights), Dijkstra performs $n$ inserts, $n$ delete-mins, and up to $m$
+decrease-keys:
+
+$$
+T_{\text{Dijkstra}} = O\bigl(n \cdot T_{\text{ins}} + n \cdot T_{\text{del-min}} + m \cdot T_{\text{dec-key}}\bigr).
+$$ {#eq-dijkstra-cost}
+
+| Implementation | Insert | Decrease-key | Delete-min | Dijkstra |
+|----------------|:------:|:------------:|:----------:|:--------:|
+| Binary heap (Williams '64) | $O(\log n)$ | $O(\log n)$ | $O(\log n)$ | $O(m\log n)$ |
+| Binomial heap (Vuillemin '78) | $O(1)$ amort. | $O(\log n)$ | $O(\log n)$ | $O(m\log n)$ |
+| **Fibonacci heap** (Fredman–Tarjan '87) | $O(1)$ amort. | $O(1)$ amort. | $O(\log n)$ amort. | $O(m + n\log n)$ |
+
+::: {.callout-note title="Why not all $O(1)$?"}
+In a comparison-based data structure, at least one of these operations must
+cost $\Omega(\log n)$ amortized. Otherwise, you could sort $n$ items in $O(n)$:
+insert all, then delete-min $n$ times. This contradicts the $\Omega(n\log n)$
+comparison-based sorting lower bound.
+:::
+
+::: {.callout-note title="Aside (mine, not the lecturer's)"}
+Beyond comparison-based heaps: Brodal (SODA '96) achieves the Fibonacci heap
+bounds in *worst case* (not amortized). Brodal, Lagogiannis, and Tarjan
+(STOC 2012) do the same on a pure pointer machine. In the word RAM model,
+Van Emde Boas trees and dynamic fusion trees give all operations in
+$O(\sqrt{\log n})$, though these exploit the integer structure of keys.
+:::
+
+## Binomial heaps {#sec-binomial-heaps}
+
+### Structure {#sec-binom-structure}
+
+A binomial heap maintains items in a **forest** of heap-ordered trees. Each
+tree has a **rank** equal to the degree of its root. Three invariants:
+
+1. **Heap order:** each node's key $\le$ all keys in its subtree.
+2. **Binomial tree structure:** a rank-$k$ tree has exactly $2^k$ nodes. Its
+   root has $k$ children, which are trees of ranks $0, 1, \ldots, k-1$
+   (in that order, left to right).
+3. **Uniqueness:** at most one tree of each rank exists in the forest.
+
+<!-- TikZ: Four binomial trees B_0 through B_3 drawn side by side. B_0 is a
+     single node. B_1 has a root with one child. B_2 has a root with children
+     that are B_0 and B_1. B_3 has a root with children B_0, B_1, B_2.
+     Label each tree with its rank and node count 2^k. -->
+
+A rank-$k$ binomial tree $B_k$ is constructed recursively: take two copies of
+$B_{k-1}$ and make one the leftmost child of the other's root. Equivalently,
+the root of $B_k$ has children that are $B_0, B_1, \ldots, B_{k-1}$.
+
+::: {.callout-tip title="Binary number analogy"}
+A binomial heap with $n$ items corresponds to the binary representation of $n$:
+there is a tree of rank $k$ if and only if bit $k$ of $n$ is 1. For example,
+$n = 13 = 1101_2$ means the heap has trees of ranks 0, 2, and 3 (sizes 1, 4, 8).
+
+Since $n$ has at most $\lfloor\log_2 n\rfloor + 1$ bits, the forest has at
+most $O(\log n)$ trees, and the maximum rank is at most $\lfloor\log_2 n\rfloor$.
+:::
+
+### Operations {#sec-binom-ops}
+
+**Link (helper).** Given two rank-$k$ trees $T_1, T_2$: compare their roots.
+The one with the larger key becomes the leftmost child of the other. Result: one
+rank-$(k+1)$ tree. Cost: $O(1)$.
+
+**Insert.** Create a singleton (rank-0 tree) and add it to the forest. If
+there's already a rank-0 tree, link them to form a rank-1 tree. If there's
+already a rank-1 tree, link again. Continue carrying until there's no collision.
+This is exactly binary addition: incrementing the binary number by 1.
+
+<!-- TikZ: A binomial heap with trees of ranks 0, 1, 2, 3 (binary 1111).
+     Show inserting one element: cascade of links producing a single rank-4
+     tree (binary 10000). Annotate each step with "carry." -->
+
+**Delete-min.** The minimum element is at one of the (at most $\log n$) roots.
+Find it, remove it. Its $k$ children (which are $B_0, B_1, \ldots, B_{k-1}$)
+become new root-level trees. Then merge trees of equal rank until uniqueness
+is restored — again, binary addition.
+
+**Decrease-key.** Decrease the key at the given pointer. If heap order is now
+violated (new key < parent's key), swap with parent. Repeat up the tree until
+heap order holds. Cost: $O(\text{depth}) = O(\log n)$ since a rank-$k$ tree has
+depth $k \le \log n$.
+
+### Amortized analysis of insertion {#sec-binom-amortized}
+
+Define the potential $\Phi = $ number of trees in the forest.
+
+The actual cost of an insertion equals $1 + \text{(number of links)}$, since each
+link takes $O(1)$ work. If there are $\ell$ links (carries), then $\ell$ trees
+are merged and 1 new tree is created, so the number of trees changes by
+$1 - \ell$ (we lose $\ell$ trees to linking but gain 1 from the new item ...
+actually we gain a net of $1 - \ell$ since each link removes one tree).
+
+Wait — let's be precise. Before insertion: $t$ trees. After insertion: $t' = t - \ell + 1$ trees (we removed $\ell$ trees via linking, but the resulting tree plus any unmerged trees remain... actually $t' = t + 1 - 2\ell + \ell = t + 1 - \ell$... let me think again).
+
+Each link merges two rank-$k$ trees into one rank-$(k+1)$ tree, reducing the
+tree count by 1. Starting with $t$ trees, adding the new singleton gives $t+1$
+trees, then $\ell$ links reduce this to $t + 1 - \ell = t'$. So $\ell = t + 1 - t'$.
+
+Actual cost: $O(1 + \ell) = O(t + 1 - t' + 1) = O(t - t' + 2)$.
+
+::: {.callout-important title="Amortized insertion cost"}
+$$
+\hat{t}_{\text{ins}} = \underbrace{O(t - t' + 2)}_{\text{actual cost}}
+  + \underbrace{(t' - t)}_{\Delta\Phi} = O(2).
+$$
+
+The linking work (which could be $O(\log n)$ in the worst case) is exactly
+cancelled by the potential decrease. Every insertion has $O(1)$ amortized cost.
+:::
+
+For delete-min: the actual cost is $O(\log n)$ (scan roots + link equal-rank
+trees). The potential change is bounded by $O(\log n)$ (we start with at most
+$\log n$ trees, remove the min root adding $\le \log n$ new trees, then
+consolidate back down). The amortized bound is $O(\log n)$.
+
+## Fibonacci heaps {#sec-fib-heaps}
+
+### Design philosophy: strategic laziness {#sec-lazy}
+
+Fibonacci heaps start from two key observations about binomial heaps:
+
+**Observation 1: Insertion doesn't need to consolidate.** If all we ever do is
+insert, why merge trees eagerly? Just append each new item to the root list.
+The only reason to consolidate is to keep the root list short for delete-min.
+So defer all consolidation to the delete-min operation — it has to scan the
+root list anyway.
+
+**Observation 2: Decrease-key shouldn't bubble up.** Bubbling a node up through
+a tree of depth $\log n$ costs $O(\log n)$. A lazier approach: if decreasing a
+node's key violates heap order, simply *cut* the node out of its tree and make
+it a new root. This is $O(1)$.
+
+### The problem with "ultra-lazy" decrease-key {#sec-ultra-lazy-problem}
+
+If we cut nodes out indiscriminately, a rank-$k$ tree might lose most of its
+descendants. Consider a rank-$k$ tree in a binomial heap — it has $2^k$ nodes.
+Now suppose we decrease-key every non-root node at depth 2 or below. After all
+these cuts, the tree still has rank $k$ (same root degree), but it might have
+only $k+1$ nodes remaining: just the root and its $k$ immediate children.
+
+<!-- TikZ: Left: a full rank-3 binomial tree (8 nodes). Right: the same tree
+     after aggressive cuts — only the root and 3 children remain, each with
+     no subtrees. Label "rank 3, but only 4 nodes!" -->
+
+This is a disaster for delete-min. Its cost is proportional to the maximum rank
+in the heap. In a binomial heap, the argument "rank-$k$ tree has $2^k$ nodes,
+so maximum rank $\le \log n$" guaranteed $O(\log n)$ delete-min. With sparse
+trees, the maximum rank could be $\Theta(n)$, making delete-min linear.
+
+### Cascading cuts: the fix {#sec-cascading-cuts}
+
+Each node carries a **mark bit** (initially 0). The rule is:
+
+1. When a non-root node $p$ loses its *first* child to a cut: set $\text{mark}(p) = 1$. No further action.
+2. When $p$ loses a *second* child: cut $p$ itself out of its tree (making it
+   a new root), clear its mark bit, and check $p$'s *parent* — if that parent
+   is already marked, cut it too. This cascades upward.
+
+The cascade stops when it hits either an unmarked node (which gets marked) or a
+root. Each cascading cut takes $O(1)$ time, and the total cascade length is
+what we'll need to account for in the amortized analysis.
+
+<!-- TikZ: A tree of rank 4. Step 1: cut node v (a grandchild), mark its
+     parent p. Step 2: cut another child of p — now p has lost 2 children,
+     so cut p too, unmark it. p's parent q was already marked, so cut q
+     too. The cascade produces three new root-list trees. Show mark bits
+     as filled (marked) or hollow (unmarked) circles. -->
+
+::: {.callout-tip title="Intuition for the rule"}
+The mark bit is a communication channel: it tells the parent "you've already
+lost one child — if you lose another, you're too thin to remain attached." This
+prevents any node from losing more than one child at each depth level, which
+is exactly what's needed to maintain the Fibonacci-number size bound.
+:::
+
+### Minimum tree sizes: Fibonacci numbers {#sec-fib-numbers}
+
+Let $s_k$ = minimum number of nodes in a rank-$k$ tree (one that has suffered
+the maximum possible cuts). Build up from the base cases:
+
+- $s_0 = 1$ (a single node).
+- $s_1 = 2$ (root with one child).
+
+For rank $k$: the root originally had children of ranks $0, 1, \ldots, k-1$.
+Each child may have lost at most one of *its* children (otherwise it would have
+been cut itself). So the $i$-th child (originally rank $i$) now has rank
+$\ge i - 1$. The smallest child has rank $\ge 0$, the next has rank $\ge 0$,
+then $\ge 1$, then $\ge 2$, ..., up to $\ge k-2$.
+
+Therefore:
+
+$$
+s_k \ge 1 + s_0 + s_0 + s_1 + s_2 + \cdots + s_{k-2} = 2 + \sum_{j=0}^{k-2} s_j.
+$$ {#eq-size-recurrence}
+
+Compare with the Fibonacci sequence $F_n$ (with $F_0 = 0, F_1 = 1, F_2 = 1, F_3 = 2, \ldots$). One can verify by induction that $s_k = F_{k+2}$:
+
+| Rank $k$ | Min size $s_k$ | $F_{k+2}$ | Full binomial $2^k$ |
+|:---------:|:--------------:|:----------:|:-------------------:|
+| 0 | 1 | 1 | 1 |
+| 1 | 2 | 2 | 2 |
+| 2 | 3 | 3 | 4 |
+| 3 | 5 | 5 | 8 |
+| 4 | 8 | 8 | 16 |
+| 5 | 13 | 13 | 32 |
+
+Since Fibonacci numbers grow as $F_n = \Theta(\phi^n)$ where $\phi = (1+\sqrt{5})/2 \approx 1.618$, a rank-$k$ tree has at least $\phi^k$ nodes.
+Therefore:
+
+$$
+\text{max rank} \le \log_\phi n \approx 1.44 \log_2 n = O(\log n).
+$$
+
+This is the crucial bound: after consolidation in delete-min, we have at most
+one tree of each rank, and ranks are $O(\log n)$, so the root list has
+$O(\log n)$ trees.
+
+### Operations in detail {#sec-fib-ops}
+
+**Insert(x).** Create a singleton node, append it to the root list. Update the
+min-pointer if $x$ is smaller than the current minimum. No consolidation.
+Actual cost: $O(1)$.
+
+**Delete-min.** Remove the minimum root $z$. Splice $z$'s children into the root
+list (they become new roots, unmark them). Then **consolidate**:
+
+1. Allocate an array $A[0 \ldots \lfloor\log_\phi n\rfloor]$ of tree pointers
+   (initially null).
+2. For each root $w$ in the root list: while $A[\text{rank}(w)]$ is non-null,
+   link $w$ with $A[\text{rank}(w)]$ (smaller root wins), clear that slot, and
+   increment $w$'s rank. Set $A[\text{rank}(w)] = w$.
+3. Rebuild the root list from the non-null entries of $A$. Update the min-pointer.
+
+Actual cost: $O(t + \log n)$ where $t$ is the root-list size before consolidation.
+After consolidation: at most $O(\log n)$ trees remain.
+
+**Decrease-key(p, k).** Set $p$'s key to $k$. If $k <$ parent's key:
+
+1. Cut $p$ from its parent, add $p$ to the root list, unmark $p$.
+2. If the parent was already marked: cut the parent too (cascading cut). Repeat.
+3. If the parent was unmarked: mark it. Stop.
+
+Let $c$ = number of cascading cuts. Actual cost: $O(1 + c)$.
+
+### Amortized analysis {#sec-fib-analysis}
+
+Define the potential:
+
+$$
+\Phi(H) = t(H) + 2\,m(H),
+$$ {#eq-fib-potential}
+
+where $t(H)$ = number of trees in the root list and $m(H)$ = number of marked
+nodes in the entire heap.
+
+This potential is always non-negative (both terms are non-negative) and starts
+at zero (empty heap has no trees and no marks).
+
+#### Insertion
+
+- Actual cost: $O(1)$.
+- $\Delta t = +1$ (one new tree).
+- $\Delta m = 0$ (no marks change).
+- Amortized cost: $O(1) + 1 + 0 = O(1)$. $\checkmark$
+
+#### Delete-min
+
+Let $t$ = number of trees before the operation.
+
+- Actual cost: $O(t + \log n)$ — scan root list to find min ($O(t)$), splice
+  children ($O(\log n)$), consolidate ($O(t + \log n)$ since we process each
+  root).
+- After consolidation: $t' \le c_1\log n$ trees for some constant $c_1$.
+- $\Delta t = t' - t \le c_1\log n - t$.
+- $\Delta m \le 0$ (we might unmark children that become roots, but we never add marks).
+- Amortized cost: $O(t + \log n) + (c_1\log n - t) + 0 = O(\log n)$. $\checkmark$
+
+The $t$ in the actual cost cancels with the $-t$ from the potential drop.
+
+#### Decrease-key with $c$ cascading cuts
+
+- Actual cost: $O(1 + c)$.
+- $\Delta t = +(c + 1)$: we create $c+1$ new trees (the node itself plus $c$
+  ancestors that get cut).
+
+  Wait — actually, only $c$ cuts total (including the initial cut of $x$). Let
+  me recount. The initial cut of $x$ creates 1 new tree. Each of the $c-1$
+  cascading cuts creates 1 more. Total: $\Delta t = +c$... Hmm, let me use
+  the lecturer's notation: $c$ = number of cascading cuts (not counting the
+  initial cut). So we do $c+1$ cuts total, creating $c+1$ new trees? No — let
+  me just be careful.
+
+  Let's say $c \ge 0$ cascading cuts happen after the initial cut of $x$. So
+  total cuts = $c + 1$, each creating one new root-list tree.
+  $\Delta t = c + 1$.
+
+- $\Delta m$: The $c$ cascading-cut nodes were marked (that's why they cascaded)
+  and get unmarked when cut: $-c$. Node $x$ itself may have been marked and gets
+  unmarked: at most $-1$ more. But $x$'s parent (after the initial cut) might
+  get newly marked: $+1$. Net: $\Delta m \le -c + 1$.
+
+- Amortized cost:
+  $$
+  O(c + 1) + (c + 1) + 2(-c + 1) = O(c) + c + 1 - 2c + 2 = O(c) - c + 3 = O(1).
+  $$ {#eq-dec-key-amortized}
+
+The key: each cascading cut contributes $+1$ to actual cost, $+1$ to $\Delta t$,
+and $-2$ to $2\Delta m$. Net per cascade: $1 + 1 - 2 = 0$. The cascading cuts
+are free in amortized terms — their cost is prepaid by the mark deposits from
+earlier decrease-key operations.
+
+::: {.callout-warning title="Why the coefficient 2?"}
+Each cascading cut produces a new tree ($+1$ potential from the $t$ term) but
+unmarks a node ($-2$ potential from the $2m$ term). Net change per cascading
+cut: $-1$. This $-1$ exactly pays for the $O(1)$ actual work of the cut. If
+the coefficient were only 1, the net would be 0 — not enough to pay for the
+work. If it were 3, the analysis still works (with slightly looser bounds).
+The minimum coefficient that makes the proof go through is 2.
+:::
+
+::: {.callout-important title="The punchline"}
+Fibonacci heaps achieve:
+
+- **Insert:** $O(1)$ amortized.
+- **Decrease-key:** $O(1)$ amortized.
+- **Delete-min:** $O(\log n)$ amortized.
+
+For Dijkstra's algorithm: $O(m + n\log n)$. This is optimal among
+comparison-based implementations (by the sorting lower bound), and it
+improves over binary heaps whenever $m = \omega(n)$.
+:::
+
+## Cheat sheet
+
+::: {.callout-important title="Cheat sheet — Lecture 6"}
+
+**Potential function method**
+
+- $\Phi : \text{states} \to \mathbb{R}_{\ge 0}$, with $\Phi(\text{empty}) = 0$.
+- Amortized cost of operation $i$: $\hat{t}_i = t_i + \Phi(S_i) - \Phi(S_{i-1})$.
+- Telescoping: $\sum \hat{t}_i = \sum t_i + \Phi(S_k) \ge \sum t_i$.
+- Design $\Phi$ to measure "structural mess" that cheap ops create and expensive ops clean up.
+
+**Binomial heaps** ($\Phi = $ number of trees)
+
+- Forest of binomial trees; rank-$k$ tree has $2^k$ nodes, at most one per rank.
+- Corresponds to binary representation of $n$; at most $\log n$ trees.
+- Insert = add singleton + carry-propagate. Amortized $O(1)$.
+- Delete-min: scan $O(\log n)$ roots, remove min, merge children. Worst case $O(\log n)$.
+- Decrease-key: bubble up. Worst case $O(\log n)$.
+
+**Fibonacci heaps** ($\Phi = t(H) + 2m(H)$)
+
+- **Insert:** append to root list → $O(1)$ amortized.
+- **Decrease-key:** cut + cascading cuts → $O(1)$ amortized.
+- **Delete-min:** remove min root, splice children, consolidate → $O(\log n)$ amortized.
+- Cascading cut rule: mark on first child loss, cut on second.
+- Tree size bound: rank-$k$ tree $\ge F_{k+2} \ge \phi^k$ nodes → max rank $\le \log_\phi n$.
+- Delete-min worst case is $O(n)$ (after $n$ lazy insertions), but amortized is $O(\log n)$.
+- Dijkstra: $O(m + n\log n)$ — optimal for comparison-based heaps.
+
+**Key references**
+
+- Williams (1964) — binary heaps.
+- Vuillemin (1978) — binomial heaps.
+- Fredman & Tarjan (1987) — Fibonacci heaps.
+- Brodal (1996) — worst-case version.
+- Brodal, Lagogiannis & Tarjan (2012) — pointer-machine version.
+- Kaplan, Tarjan & Zwick (2014) — single-tree simplification.
+:::
+
+## FAQ — questions students actually asked {#sec-faq}
+
+**Q: For Dijkstra's runtime, shouldn't it be $m$ times decrease-key, not $n$
+times?**
+
+A: Yes. The relaxation step iterates over all edges leaving the extracted vertex,
+potentially performing one decrease-key per edge. Over the entire algorithm,
+that's at most $m$ decrease-keys. The correct formula is $O(n \cdot T_{\text{ins}} + n \cdot T_{\text{del-min}} + m \cdot T_{\text{dec-key}})$.
+
+**Q: Delete-min worst case in a Fibonacci heap — can it really be linear?**
+
+A: Yes. If you perform $n$ insertions with no intervening delete-mins, the root
+list accumulates $n$ singleton trees. The first delete-min must scan all $n$
+roots to find the minimum, then consolidate. Actual cost: $\Theta(n)$. But the
+amortized cost is $O(\log n)$ — those $n$ insertions each deposited 1 unit of
+potential (one new tree), and the delete-min spends it all at once.
+
+**Q: When you do a cascading cut, do you also modify the key of the parent
+being cut?**
+
+A: No. Keys never change during cascading cuts. The parent $p$ keeps its
+original key. The cut severs the edge between $p$ and its parent, making $p$ a
+new root-list tree. The subtree rooted at $p$ (with whatever children remain)
+moves intact. Cascading cuts are purely structural — they rearrange the forest
+without touching keys.
+
+**Q: The coefficient 2 in front of the marked-node count seems arbitrary. Could
+you use a larger coefficient?**
+
+A: Any coefficient $\ge 2$ gives a valid proof. The constraint is: each
+cascading cut creates $+1$ tree and removes $-1$ mark. If the mark coefficient
+is $c$, the net potential change per cascade is $+1 - c$. We need this to be
+$\le -1$ (to pay for the $O(1)$ actual work), so $c \ge 2$. Using $c = 2$ is
+the tightest choice; using $c = 3$ works but gives a looser (larger) amortized
+bound for decrease-key in the non-cascading case.
+
+**Q: Can't you hope for all operations to be $O(1)$ amortized using word RAM
+tricks?**
+
+A: In the comparison model, no — sorting reduces to $n$ inserts + $n$
+delete-mins, giving an $\Omega(n\log n)$ lower bound on total cost, hence
+$\Omega(\log n)$ amortized for at least one operation. In word RAM, yes: using
+Van Emde Boas or dynamic fusion trees, all priority queue operations can be done
+in $O(\sqrt{\log n})$ time (for polynomial-universe keys), beating the
+comparison lower bound.
+
+**Q: What's the intuition for potential functions? They feel arbitrary.**
+
+A: Think of the potential as measuring "how much latent work has accumulated."
+An insertion makes the structure messier — it deposits one unit of future work
+into the bank. A delete-min cleans up all the mess — it withdraws from the bank
+to pay for consolidation. The potential function quantifies this: $t(H)$ counts
+the "insertion debt" (trees that haven't been consolidated yet), and $2m(H)$
+counts the "cascading-cut debt" (nodes that are about to cascade if hit again).
+The numbers aren't arbitrary — they emerge from asking "what cancels what in the
+amortized calculation?"
+
+**Q: If I use a Fibonacci heap, would I see a speedup in practice?**
+
+A: Probably not for typical graph sizes. Fibonacci heaps have large constant
+factors (pointer manipulations, mark-bit bookkeeping, complex consolidation
+logic). In practice, binary heaps with a $d$-ary variant (e.g., 4-heaps) often
+outperform Fibonacci heaps for $n < 10^6$ due to cache efficiency. Fibonacci
+heaps win only for very large, sparse graphs where $m \gg n\log n$.
+
+## Further reading {#sec-further-reading}
+
+- **Fredman and Tarjan (1987).** "Fibonacci Heaps and Their Uses in Improved
+  Network Optimization Algorithms." *Journal of the ACM* 34(3):596–615.
+  The original paper. Worth reading for the motivation and the connection to
+  shortest paths and MST.
+
+- **Brodal (1996).** "Worst-Case Efficient Priority Queues." *Proceedings of
+  SODA* 1996:52–58. Same bounds as Fibonacci heaps, but worst-case. Remarkably
+  clean construction.
+
+- **Brodal, Lagogiannis, and Tarjan (2012).** "Strict Fibonacci Heaps."
+  *Proceedings of STOC* 2012:1177–1184. Pure pointer-machine implementation
+  with no arrays.
+
+- **Kaplan, Tarjan, and Zwick (2014).** "Fibonacci Heaps Revisited." *arXiv
+  preprint*. Simplifies the structure to maintain a single tree (no forest),
+  aiming for practical simplicity.
+
+- **Vuillemin (1978).** "A Data Structure for Manipulating Priority Queues."
+  *Communications of the ACM* 21(4):309–315. The original binomial heap paper.
+
+- **Cormen, Leiserson, Rivest, and Stein (2009).** *Introduction to Algorithms*
+  (CLRS), Chapter 19. Complete pseudocode and formal proofs for Fibonacci heaps.
+
+## Try it yourself {#sec-exercises}
+
+1. **Dynamic array (potential function warm-up).** A dynamic array starts empty
+   and doubles its capacity (copying all elements) when full. Define a
+   potential function $\Phi$ such that `append` has $O(1)$ amortized cost. What
+   is $\Phi$ after exactly $n = 2^k$ appends? Verify that the total actual cost
+   of $n$ appends is $O(n)$ using your potential function.
+
+2. **Binomial heap merge.** Show that merging two binomial heaps of sizes $n_1$
+   and $n_2$ takes $O(\log(n_1 + n_2))$ time. (*Hint:* adding two binary
+   numbers of at most $\log n$ bits takes time proportional to the number of
+   bits.)
+
+3. **Cascading cut depth.** Construct an explicit sequence of $O(n)$ operations
+   (insertions and decrease-keys) on an initially empty Fibonacci heap that
+   produces a single decrease-key triggering $\Omega(\log n)$ cascading cuts.
+   (*Hint:* first build a deep tree via insertions and delete-mins, then
+   carefully decrease-key nodes at increasing depth to set up marks.)
+
+4. **Fibonacci tree construction.** Write Python code that builds the minimum-size
+   rank-$k$ Fibonacci tree (the one with exactly $F_{k+2}$ nodes) for
+   $k = 0, 1, \ldots, 10$. Print each tree's structure and verify the node counts
+   match Fibonacci numbers.
+
+```python
+def min_fib_tree(k):
+    """Build the minimum rank-k Fibonacci heap tree.
+
+    Returns (rank, [children]) where each child is also a (rank, [children]) tuple.
+    """
+    if k == 0:
+        return (0, [])
+    if k == 1:
+        return (1, [(0, [])])
+    # Original children had ranks 0, 1, ..., k-1.
+    # Each may have lost one child, reducing rank by at most 1.
+    # Minimum: child i (originally rank i) now has rank max(0, i-1).
+    children = [(0, [])]  # child 0: still rank 0
+    for i in range(1, k):
+        children.append(min_fib_tree(i - 1))  # child i: rank i-1 (lost one)
+    return (k, children)
+
+def count_nodes(tree):
+    """Count total nodes in a tree."""
+    return 1 + sum(count_nodes(c) for c in tree[1])
+
+def fib(n):
+    """Return the n-th Fibonacci number (F_0=0, F_1=1, ...)."""
+    a, b = 0, 1
+    for _ in range(n):
+        a, b = b, a + b
+    return a
+
+print(f"{'Rank k':<8} {'Nodes':<8} {'F(k+2)':<8} {'Match?'}")
+print("-" * 35)
+for k in range(11):
+    t = min_fib_tree(k)
+    n = count_nodes(t)
+    f = fib(k + 2)
+    print(f"{k:<8} {n:<8} {f:<8} {'yes' if n == f else 'NO'}")
+```
+
+5. **Dijkstra comparison (empirical).** Implement Dijkstra's algorithm with
+   both a binary heap (Python's `heapq` with lazy deletion) and a simple
+   Fibonacci heap simulation. Generate random sparse graphs ($m = 3n$, random
+   edge weights in $[1, 1000]$). Plot wall-clock time vs. $n$ for
+   $n \in \{10^3, 10^4, 10^5\}$. Does the theoretical advantage of Fibonacci
+   heaps materialize? Explain why or why not in terms of constant factors and
+   cache behavior.

@@ -1,0 +1,351 @@
+---
+title: "Link-Cut Trees"
+subtitle: "COMPSCI 224 Lecture 22 — Fall 2014"
+author: "Companion notes by Kun Deng"
+date: today
+abstract: |
+  Link-cut trees store a dynamic forest of rooted trees and support path
+  operations—find-root, path-minimum, path-update—in $O(\log n)$ amortised
+  time.  Plugging them into the blocking-flow subroutine drops the cost of
+  finding a blocking flow from $O(mn)$ to $O(m \log n)$, yielding one of the
+  fastest known max-flow algorithms.  The data structure rests on two ideas:
+  decomposing each tree into *preferred paths* and representing each path
+  with an auxiliary splay tree keyed by depth.
+---
+
+## Why this lecture matters
+
+The blocking-flow algorithm from Lecture 21 already achieved $O(mn)$ per phase, but every DFS step touched one edge—wasteful when long fragments of previously explored, still-live edges could be skipped.  Link-cut trees are the data structure that makes that skipping possible: they remember which path fragments survive after augmentation and let you jump to the end of a fragment in $O(\log n)$ time.  The ideas here—preferred-path decomposition, auxiliary trees, the access primitive—reappear in dynamic connectivity, top-tree algorithms, and the fastest known flow algorithms.
+
+::: {.callout-tip title="30-second story"}
+1. Blocking flow via DFS costs $O(mn)$ because each advance/retreat step touches one edge.
+2. After augmentation, surviving edges form *tree fragments*; link-cut trees remember them.
+3. A link-cut tree stores a forest and supports make-tree, find-root, link, cut, find-min, and path-subtract, each in $O(\log n)$ amortised time.
+4. The key internal structure is a *preferred-path decomposition*: each tree is partitioned into vertex-disjoint paths, each stored in an auxiliary splay tree keyed by depth.
+5. The workhorse subroutine `access(v)` makes the root-to-$v$ path preferred by splicing auxiliary trees upward.
+6. With link-cut trees, blocking flow runs in $O(m \log n)$, giving $O(mn \log n)$ max flow overall.
+:::
+
+## Blocking flow revisited {#sec-blocking-flow-revisited}
+
+Recall the blocking-flow framework from Lecture 21.  Given a level graph $L$ (edges go from level $i$ to level $i+1$ only):
+
+1. **Repeat:** find a blocking flow $F$ in $L$; augment the overall flow by $F$; rebuild the residual graph.
+2. **Stop** when no $s$-$t$ path exists in the residual graph.
+
+The number of iterations is at most $n - 1$ (the $s$-$t$ distance in the residual graph increases by at least one per phase).  Last time we found each blocking flow via DFS in $O(m)$ advances and retreats, giving $O(mn)$ per blocking flow and $O(mn^2)$ total.
+
+### Why DFS wastes work in general capacities
+
+In the unit-capacity case every augmentation saturates the entire path, so each edge is touched at most twice (once forward, once retreat).  In general capacities, only the bottleneck edge dies; the rest survive as a *tree fragment*.  The next DFS must re-traverse these surviving edges one by one.
+
+### A concrete example
+
+Consider a level graph with four levels ($s$ at level 0, $t$ at level 3).  DFS finds an $s$-$t$ path and augments.  The bottleneck edge saturates, but the other edges survive.  Two disconnected fragments remain—a length-1 path and a length-2 path.
+
+On the next DFS from $s$, the algorithm advances to some vertex, discovers a live edge, and enters the length-2 fragment.  In the naive approach it must walk through both edges of that fragment to reach its end.  If it *remembered* the fragment, it could skip directly from the entry point to the end, saving two steps.  Over many augmentations, these savings compound: fragments can be long, and each re-traversal costs proportional to the fragment's length.
+
+After multiple augmentations, the surviving fragments are not necessarily simple paths.  When an augmenting path branches through a fragment—entering at one vertex and leaving at another—the leftover may be a *tree*, not a path.  In general, the collection of surviving fragments at any point during the algorithm is a *forest*: a collection of rooted trees, where each tree is a subset of the level graph's edges.
+
+<!-- TikZ: level graph with s on the left, t on the right, four levels.  Show an s-t path highlighted, then two edges crossed out (saturated), leaving two disconnected live fragments—one a single edge, the other a tree with three edges. -->
+
+::: {.callout-tip title="Intuition: skip, don't re-walk"}
+Imagine you are walking a hallway and have already mapped every room.  When a door closes (edge saturated), you should teleport to the end of the mapped section, not retrace every step.  Link-cut trees are the teleporter.
+:::
+
+## The link-cut tree interface {#sec-lct-interface}
+
+A link-cut tree maintains a collection of vertex-disjoint rooted trees and supports these operations.  Every operation will run in $O(\log n)$ amortised time (analysis in Lecture 23).
+
+| Operation | Effect |
+|-----------|--------|
+| `make_tree()` | Create a new singleton tree (one vertex, no edges). |
+| `find_root(v)` | Return the root of the tree containing $v$. |
+| `link(v, w, x)` | Make $v$ (which must be a root) a child of $w$ with edge capacity $x$.  Requires $v$ and $w$ in different trees. |
+| `cut(v)` | Destroy the edge from $v$ to its parent, splitting one tree into two. |
+| `find_min(v)` | Return the edge of minimum capacity on the $v$-to-root path (ties broken closest to root). |
+| `subtract(v, x)` | Subtract $x$ from the capacity of every edge on the $v$-to-root path. |
+
+::: {.callout-note title="Why not a DAG?"}
+A student asked why the maintained structure is always a forest, never a DAG.  The answer is operational: the algorithm always follows existing fragments first (`find_root` on $s$), so it never creates a second parent for any vertex.  The level graph itself is a DAG, but the subgraph $H$ we build inside the link-cut tree is always a forest.
+:::
+
+## Blocking flow with link-cut trees {#sec-blocking-flow-lct}
+
+Let $L$ be the level graph and $H$ the forest maintained by the link-cut tree (initially $n$ isolated vertices).
+
+```python
+# Blocking flow using link-cut trees
+for each vertex u in L:
+    make_tree(u)
+
+while True:
+    v = find_root(s)
+
+    if v == t:
+        # --- augment ---
+        while True:
+            (z, x) = find_min(s)     # z = bottleneck vertex, x = capacity
+            subtract(s, x)           # reduce capacities along s-to-t path
+            if x == 0:               # if the bottleneck edge was already zero...
+                break                # ...we need to check again
+            cut(z)                   # remove saturated edge z -> parent(z)
+            delete edge (z, parent(z)) from L
+            # loop: keep removing zero-capacity edges until the min is positive
+            (z2, x2) = find_min(s)
+            if x2 > 0:
+                break
+            # else continue loop to remove next zero-capacity edge
+
+    elif v has an outgoing edge to some w in L:
+        # --- advance ---
+        link(v, w, capacity(v, w) in L)
+
+    else:
+        # --- retreat ---
+        if v == s:
+            break                    # no more s-t paths; done
+        for each child y of v in H:
+            cut(y)
+            delete edge (y, v) from L
+```
+
+### Counting operations
+
+Each iteration of the outer loop does one of three things:
+
+- **Link** (advance): explores a new edge.  Happens at most $m$ times.
+- **Cut** (retreat or clean-up): deletes an edge.  Also at most $m$ times in total.
+- **Find-min / subtract** (augment): the augment branch runs `find_min` repeatedly, but each call except possibly the last deletes an edge.  So aggregate `find_min` calls are also $O(m)$.
+
+Total link-cut operations across the entire blocking-flow computation: $O(m)$.
+
+::: {.callout-important}
+If every operation costs $O(\log n)$, blocking flow costs $O(m \log n)$.  Combined with $O(n)$ phases, max flow is $O(mn \log n)$.
+:::
+
+## Preferred-path decomposition {#sec-preferred-path}
+
+The internal representation of a link-cut tree rests on partitioning each represented tree into vertex-disjoint *preferred paths*.
+
+### Preferred children
+
+Every non-leaf vertex $v$ has at most one **preferred child**: the child whose subtree contains the most recently accessed node.  If $v$ itself was the last node accessed in its subtree, it has no preferred child.
+
+A **preferred edge** leads from a vertex to its preferred child.  A **preferred path** is a maximal chain of preferred edges.
+
+### Worked example
+
+Consider a rooted tree where the root $r$ has children $a$ and $b$; vertex $a$ has children $c$ and $d$; vertex $b$ has child $e$; and $e$ has children $f$ and $g$.  Suppose the last node accessed was $f$.
+
+- At $e$: the last accessed node in $e$'s subtree is $f$, which is in $f$'s subtree (the left child).  So $e$'s preferred child is $f$.
+- At $b$: the last accessed node in $b$'s subtree is $f$, which is in $e$'s subtree.  So $b$'s preferred child is $e$.
+- At $r$: the last accessed node in $r$'s subtree is $f$, which is in $b$'s subtree.  So $r$'s preferred child is $b$.
+- At $a$: if the last accessed node in $a$'s subtree was $a$ itself, then $a$ has no preferred child.
+
+The preferred edges are $r \to b$, $b \to e$, $e \to f$.  These form one preferred path: $(r, b, e, f)$.  Vertices $a$, $c$, $d$, $g$ are each isolated preferred paths (singletons).
+
+<!-- TikZ: the tree described above.  Preferred edges r→b, b→e, e→f drawn thick/solid.  Other edges thin/dashed.  The preferred path (r,b,e,f) highlighted in blue.  Singletons a, c, d, g in grey. -->
+
+### The tree of paths
+
+Collapse each preferred path into a single super-node.  The result is a *tree of paths*: each super-node is a preferred path, connected to its parent path by a non-preferred edge.  In the example above, collapsing the path $(r, b, e, f)$ into one super-node gives a star: the super-node at the centre, with singletons $a$, $g$, $c$, $d$ hanging off it via non-preferred edges.
+
+This decomposition changes dynamically as we access different vertices.  If we next access $d$, the preferred child of $r$ switches from $b$ to $a$, the preferred child of $a$ becomes $d$, and the old preferred path $(r, b, e, f)$ breaks apart.
+
+::: {.callout-tip title="Mental model"}
+Think of a road network where each road is a preferred path.  Intersections (non-preferred edges) connect roads.  When you access a vertex, you repave the highway from the root to that vertex, possibly rerouting traffic from old highways.
+:::
+
+## Auxiliary trees: splay trees keyed by depth {#sec-auxiliary-trees}
+
+Each preferred path is stored in an **auxiliary tree**—a splay tree whose keys are depth in the represented tree.  A node closer to the root has a smaller key (is further left in the splay tree).
+
+### Path-parent pointers
+
+The root of each auxiliary tree stores a **path-parent pointer** to the parent of the top node of that path in the represented tree.  This pointer records the non-preferred edge connecting this path to its parent path.  Crucially, the parent path's auxiliary tree does *not* store a downward pointer to the child path.  The asymmetry is intentional: the parent path doesn't need to know about its children paths because the access operation works bottom-up.
+
+### Concrete layout
+
+Returning to the earlier example with preferred path $(r, b, e, f)$: this path is stored in one splay tree with four nodes, keyed by depth.  Node $r$ has depth 0 (smallest key, leftmost), $b$ has depth 1, $e$ has depth 2, $f$ has depth 3 (largest key, rightmost).  The splay tree might arrange these with $b$ or $e$ at the root after rotations.
+
+Vertex $g$ is a singleton auxiliary tree.  Its root stores a path-parent pointer to $e$ (because $e$ is $g$'s parent in the represented tree and $g$ is not a preferred child).  Similarly, $a$ is a singleton with a path-parent pointer to $r$.
+
+<!-- TikZ: The preferred path (r,b,e,f) as a splay tree with e at the root, r and b on the left, f on the right.  Singletons g and a shown as isolated nodes.  Dashed arrows from g to e and from a to r labelled "path-parent".  Caption: "Auxiliary trees for the preferred-path decomposition.  Each singleton's root has a path-parent pointer to its parent in the represented tree." -->
+
+::: {.callout-note title="Terminology"}
+The **represented tree** $T$ is the actual rooted tree we are maintaining (a subgraph of the level graph).  The **auxiliary tree** is the splay tree used to store one preferred path.  These are different objects—don't confuse them.
+:::
+
+## The access operation {#sec-access}
+
+`access(v)` is the workhorse subroutine.  Every other operation begins with an access.  Its job:
+
+> Make the root-to-$v$ path in the represented tree a single preferred path, and make $v$ the root of the root auxiliary tree.
+
+### Step-by-step
+
+1. **Splay $v$** to the root of its auxiliary tree.
+2. **Cut the right subtree:** $v$ has no preferred child after being accessed, so everything deeper than $v$ on its old preferred path must be detached.  In the auxiliary splay tree, "deeper" means "larger key" which means "right subtree."  Set the right child $R$'s path-parent to $v$ (recording the now non-preferred edge), and set $v$'s right child to null.  The subtree $R$ becomes its own auxiliary tree.
+3. **Splice upward:** follow $v$'s path-parent pointer to some vertex $w$ in a different auxiliary tree.  Splay $w$ to the root of its auxiliary tree.  Now $w$'s right subtree contains all vertices deeper than $w$ on $w$'s old preferred path—these are $w$'s old preferred descendants.  Detach this right subtree as a new auxiliary tree with path-parent $w$.  Then make $v$'s entire auxiliary tree the new right subtree of $w$.  Update pointers: $v$ no longer has a path-parent (it is now a real child of $w$ in the auxiliary tree); the detached subtree's root gets $w$ as its path-parent.
+4. **Repeat step 3** until $v$ is in the root auxiliary tree (i.e., there is no more path-parent to follow).
+5. **Splay $v$** one final time so it is the root of the (now merged) root auxiliary tree.
+
+The number of splice iterations equals the number of non-preferred edges on the root-to-$v$ path in the represented tree—equivalently, the number of preferred-child changes that happen.
+
+<!-- TikZ: before-and-after diagram of one splice step.  Left: V's aux tree with path-parent arrow to W in W's aux tree.  W has a right subtree R.  Right: R is detached (new path-parent to W), V's aux tree is attached as W's right child.  Arrows and labels on path-parent pointers. -->
+
+::: {.callout-warning title="Pointer bookkeeping"}
+Each splice changes three things: (1) a path-parent becomes a real parent, (2) an old real child becomes a path-parent, and (3) the subtree structure of $w$'s auxiliary tree changes.  Getting these updates wrong is the most common implementation bug.
+:::
+
+### Cost of access
+
+The number of splices in `access(v)` equals the number of preferred-child changes along the root-to-$v$ path.  The full amortised analysis (Lecture 23) shows this is $O(\log n)$ amortised using the splay tree's access lemma.
+
+## Other operations via access {#sec-other-ops}
+
+Once `access(v)` is in hand, every other operation is short.
+
+### find_root(v)
+
+```python
+def find_root(v):
+    access(v)
+    # v is now the root of the root aux tree.
+    # The root of the represented tree is the leftmost node.
+    r = v
+    while r.left is not None:
+        r = r.left
+    splay(r)          # amortised O(1) extra after the walk
+    return r
+```
+
+After the access, $v$'s auxiliary tree contains the entire root-to-$v$ path.  The root of the represented tree has the smallest depth, so it is the leftmost node.
+
+### find_min(v)
+
+```python
+def find_min(v):
+    access(v)
+    # return the minimum-capacity edge in v's aux tree
+    # (augmented splay tree stores subtree min)
+    return v.subtree_min
+```
+
+The auxiliary splay tree is augmented so each node stores the minimum edge capacity in its subtree.  After access, the root's augmented value gives the answer for the entire root-to-$v$ path.
+
+### cut(v)
+
+```python
+def cut(v):
+    access(v)
+    # v has no right child (access guarantees this).
+    # The left subtree contains ancestors in the represented tree.
+    v.left.parent = None      # detach ancestors
+    v.left = None
+```
+
+### link(v, w, x)
+
+```python
+def link(v, w, x):
+    # v must be the root of its represented tree
+    access(v)
+    access(w)
+    # w becomes v's parent; w has higher depth, so w goes to v's left
+    v.left = w
+    w.parent = v
+    # store capacity x on the edge v -> w
+```
+
+After the two accesses, $v$ is the root of its auxiliary tree (with no left child, since $v$ is the root of its represented tree—no one is shallower).  $w$ is the root of a different auxiliary tree.  Making $w$ the left child of $v$ is valid because $w$ is at a shallower depth (smaller key) than $v$ in the combined tree.  The edge between them carries capacity $x$.
+
+::: {.callout-warning title="Preconditions matter"}
+`link` assumes $v$ is a root and $v, w$ are in different trees.  Violating either precondition corrupts the data structure silently—there is no built-in check.  In the blocking-flow algorithm, these preconditions are always met because we only link the result of `find_root(s)` (which is a root by definition) to a vertex in the level graph that we haven't yet connected.
+:::
+
+::: {.callout-note title="Aside (mine, not the lecturer's)"}
+The original Sleator–Tarjan paper presents link-cut trees with worst-case $O(\log n)$ per operation using *biased search trees* instead of splay trees.  The splay-tree version gives the same amortised bound with simpler code.  Both appear in practice; the splay variant is more common in competitive programming.
+:::
+
+## Putting it all together {#sec-runtime-summary}
+
+| Component | Cost |
+|-----------|------|
+| Blocking-flow operations | $O(m)$ total across one phase |
+| Cost per link-cut operation | $O(\log n)$ amortised |
+| Blocking flow per phase | $O(m \log n)$ |
+| Number of phases | $O(n)$ |
+| **Total max flow** | $O(mn \log n)$ |
+
+::: {.callout-important title="Historical note"}
+Link-cut trees are due to Sleator and Tarjan (*J. Comput. System Sci.*, 1983).  The same paper introduced splay trees.  The $O(mn \log n)$ max-flow bound remained the fastest for dense graphs for over a decade.
+:::
+
+## Cheat sheet
+
+::: {.callout-important title="Cheat sheet — Link-Cut Trees"}
+
+**What they store:** a dynamic forest of rooted trees with weighted edges.
+
+**Operations (all $O(\log n)$ amortised):**
+
+- `make_tree()` — create isolated vertex
+- `find_root(v)` — root of $v$'s tree
+- `link(v, w, x)` — make root $v$ a child of $w$ with edge weight $x$
+- `cut(v)` — detach $v$ from parent
+- `find_min(v)` — min-weight edge on $v$-to-root path (closest to root on tie)
+- `subtract(v, x)` — subtract $x$ from all edges on $v$-to-root path
+
+**Internal structure:**
+
+- *Preferred-path decomposition:* each tree split into preferred paths
+- *Auxiliary trees:* each preferred path stored in a splay tree, keyed by depth
+- *Path-parent pointers:* link auxiliary trees across non-preferred edges
+
+**Key subroutine — `access(v)`:**
+
+1. Splay $v$; detach right subtree (no preferred child)
+2. Splice upward: splay path-parent, swap preferred descendants, merge auxiliary trees
+3. Repeat until $v$ is root of root auxiliary tree
+
+**Application to blocking flow:**
+
+- $O(m)$ link-cut operations per phase × $O(\log n)$ each = $O(m \log n)$ per phase
+- $O(n)$ phases → $O(mn \log n)$ total for max flow
+:::
+
+## FAQ — questions students actually asked {#sec-faq}
+
+**Q: Why is the maintained structure always a forest and never a DAG?**
+The level graph $L$ is a DAG, but the subgraph $H$ maintained in the link-cut tree is always a forest because the algorithm always follows existing fragments first.  `find_root(s)` jumps to the end of the current fragment before exploring new edges.  You never create a second parent for any vertex.
+
+**Q: After augmentation, when multiple edges have zero capacity, don't we need to delete all of them?**
+Yes.  After calling `subtract`, the minimum-capacity edge is saturated, but there may be others at zero too.  The algorithm loops on `find_min(s)` until the returned capacity is positive, deleting each zero-capacity edge it finds.  Each such deletion costs $O(\log n)$ but also permanently removes an edge, so the total extra work is $O(m \log n)$.
+
+**Q: When we retreat from a dead-end vertex $v$, why delete edges into $v$ rather than just the edge we arrived on?**
+If $v$ has no outgoing edges in $L$, it is permanently useless—no future path can go through it.  Aggressively cutting all incoming edges avoids revisiting $v$.  The descendants of $v$'s children may still be reachable through other routes, so we do not touch edges deeper in the tree.
+
+**Q: Could a vertex have two heavy children?**
+No—that question belongs to Lecture 23's analysis.  But the short answer: a heavy child has subtree size $> n/2$, so there can be at most one.
+
+**Q: Why do we splay $v$ at the end of `find_root`?**
+After walking to the leftmost node in the auxiliary tree, that node may be deep.  Splaying it restores the $O(\log n)$ amortised bound for subsequent operations.  Without this final splay, a sequence of `find_root` calls could degrade to linear time.
+
+## Further reading {#sec-further-reading}
+
+- **Sleator and Tarjan**, "A data structure for dynamic trees," *J. Comput. System Sci.* 26(3):362–391, 1983.  The original paper defining link-cut trees and splay trees.
+- **Sleator and Tarjan**, "Self-adjusting binary search trees," *J. ACM* 32(3):652–686, 1985.  Full analysis of splay trees and the access lemma.
+- **Goldberg and Tarjan**, "A new approach to the maximum-flow problem," *J. ACM* 35(4):921–940, 1988.  Uses link-cut trees in the push-relabel framework.
+- **Tarjan**, "Amortized computational complexity," *SIAM J. Alg. Disc. Meth.* 6(2):306–318, 1985.  The potential-function framework that underpins the analysis.
+
+## Try it yourself {#sec-exercises}
+
+1. **Warm-up.**  Draw a rooted tree on 7 vertices with an arbitrary preferred-path decomposition.  Identify the auxiliary trees and path-parent pointers.  Then perform `access(v)` for a leaf $v$ and redraw the decomposition.
+
+2. **Subtract via augmentation.**  Explain how to implement `subtract(v, x)` using an augmented splay tree.  What value does each node store?  How do lazy propagation tags work during splay rotations?
+
+3. **Edge deletion order.**  In the blocking-flow pseudocode, the augment branch loops on `find_min` to delete zero-capacity edges.  Prove that the total number of `find_min` calls across the entire blocking-flow computation is $O(m)$.
+
+4. **Coding challenge.**  Implement a link-cut tree supporting `make_tree`, `find_root`, `link`, `cut`, and `path_min`.  Use splay trees as auxiliary trees.  Test it by computing a blocking flow on a small level graph (e.g., 6 vertices, 8 edges) and verify the result against a brute-force BFS/DFS implementation.

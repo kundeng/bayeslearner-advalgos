@@ -1,0 +1,29 @@
+# Preface {.unnumbered}
+
+These are companion notes for **Harvard COMPSCI 224 — Advanced Algorithms**,
+taught by Jelani Nelson in Fall 2014. They are not transcripts. Each chapter
+reorganises a lecture for clarity, adds intuition and diagrams, and includes
+exercises — turning a 75-minute video into a self-contained study resource.
+
+**Who this is for.** A graduate student (or ambitious undergrad) with
+CLRS-level algorithms, basic probability, and mathematical maturity.
+You should be comfortable with asymptotic notation, amortised analysis,
+and basic randomised algorithms.
+
+**What it covers.** 24 lectures across five topics:
+
+1. **Data Structures** — Word-RAM, van Emde Boas, fusion trees, hashing
+   (universal, cuckoo, Bloom filters), amortised analysis, binomial and
+   Fibonacci heaps, splay trees
+2. **Online Algorithms** — Competitive analysis, paging, ski rental,
+   primal-dual framework
+3. **Approximation and LP** — Set cover, vertex cover, integrality gaps,
+   PTAS/FPTAS, SDP rounding, simplex, ellipsoid, interior point methods
+4. **Multiplicative Weights and Flows** — Expert advice, MW for LPs,
+   max flow (Ford-Fulkerson, capacity scaling, blocking flows),
+   link-cut trees, min-cost flow
+5. **Streaming and Sketching** — Distinct elements, L2 estimation,
+   Johnson-Lindenstrauss, fast regression
+
+Each chapter includes a cheat sheet, FAQ from the actual lecture Q&A,
+primary-source references, and exercises.

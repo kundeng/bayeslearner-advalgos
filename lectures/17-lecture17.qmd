@@ -1,0 +1,495 @@
+---
+title: "Interior Point Methods: Path Following and Gradient Descent"
+subtitle: "COMPSCI 224 Lecture 17 — Fall 2014"
+author: "Companion notes by Kun Deng"
+date: today
+abstract: |
+  The path-following interior point method converts an LP into an unconstrained
+  optimisation problem via a log barrier, then traces the central path from the
+  analytic centre to the optimal vertex by incrementally raising a parameter
+  $\lambda$.  The cost gap is $m/\lambda$, so $O(\sqrt{m}\, L)$ multiplicative
+  increments of size $1 + 1/\sqrt{m}$ suffice.  Gradient descent—the
+  prototypical first-order method—converges at rate $1 - \mu/L$ per step,
+  where $\mu$ and $L$ bound the Hessian's eigenvalues.  Newton's method
+  (Lecture 18) will replace gradient descent inside the inner loop.
+---
+
+## Why this lecture matters
+
+Interior point methods are how modern solvers actually solve large LPs. This lecture lays out the entire architecture: a log barrier converts constraints into a penalty, the central path traces optimal solutions as the penalty weight grows, and an iterative method (gradient descent today, Newton's method next time) refines each approximate solution. The gradient-descent detour is valuable beyond LP—it is the foundation of continuous optimisation and machine learning.
+
+::: {.callout-tip title="30-second story"}
+1. The log barrier $-\sum \ln s_i$ keeps iterates in the polytope's interior; $\lambda$ controls the trade-off between the barrier and the true objective.
+2. The minimiser $x(\lambda)$ traces the **central path** from the analytic centre ($\lambda = 0$) to the optimal vertex ($\lambda \to \infty$).
+3. The cost gap satisfies $c^\top x(\lambda) - c^\top x^* \le m/\lambda$, so large $\lambda$ means near-optimality.
+4. Incrementing $\lambda$ by factor $1 + 1/\sqrt{m}$ per step yields $O(\sqrt{m}\, L)$ total iterations.
+5. Gradient descent converges at rate $\alpha = 1 - \mu/L$ per step, where $\mu$ and $L$ are eigenvalue bounds on the Hessian (the **condition number** $\kappa = L/\mu$ governs speed).
+6. Newton's method (Lecture 18) will replace gradient descent for the inner loop, using second-order information.
+:::
+
+
+## The interior point setup {#sec-ipm-setup}
+
+### The LP and its barrier reformulation
+
+Start with the LP
+
+$$
+\min\; c^\top x \quad\text{s.t.}\quad Ax \ge b,
+$$ {#eq-lp17}
+
+where $A$ is $m \times n$, $b \in \mathbb{R}^m$, $x \in \mathbb{R}^n$. Define the **slack vector** $s(x) \in \mathbb{R}^m$ with entries $s_i(x) = a_i^\top x - b_i$. For any feasible $x$, every slack is non-negative.
+
+The interior point method replaces @eq-lp17 with the unconstrained problem
+
+$$
+\min_{x \in \mathbb{R}^n}\; f_\lambda(x) = \lambda\, c^\top x - \sum_{i=1}^{m} \ln\bigl(s_i(x)\bigr).
+$$ {#eq-barrier-obj}
+
+The **log barrier** $p(s) = -\sum_{i=1}^m \ln(s_i)$ has two critical properties:
+
+- It goes to $+\infty$ as any slack approaches zero (keeps iterates away from the boundary).
+- It is strictly convex on the interior $\{x : s(x) > 0\}$, so the minimiser is unique.
+
+::: {.callout-tip title="Barrier intuition"}
+Think of the polytope as a room. The barrier function is like a repulsive force from every wall. With $\lambda = 0$, you stand at the point farthest from all walls (the **analytic centre**). As $\lambda$ increases, the cost function pulls you toward the optimal corner, but the barrier keeps you from crashing into the walls. You slide along a smooth curve—the central path—from the centre to the corner.
+:::
+
+
+## The central path {#sec-central-path}
+
+For each $\lambda \ge 0$, define $x(\lambda) = \arg\min_x f_\lambda(x)$. The curve
+
+$$
+\{(\lambda,\; x(\lambda)) : \lambda \ge 0\}
+$$
+
+is the **central path**.
+
+- At $\lambda = 0$: $x(0)$ is the analytic centre—the point maximising $\sum_i \ln(s_i(x))$.
+- As $\lambda \to \infty$: $x(\lambda) \to x^*$, the optimal vertex.
+
+<!-- TikZ: 2D pentagon as feasible region, central path drawn as smooth curve from interior to optimal vertex at bottom, points x(lambda_0), x(lambda_1), x(lambda_2) marked along path, cost gradient arrow pointing down -->
+
+The path-following algorithm doesn't compute $x(\lambda)$ exactly. It maintains an **approximate minimiser** $\tilde{x}(\lambda_k)$ that stays near the central path, then uses it as a warm start for the next $\lambda_{k+1}$.
+
+The name "path-following" comes from this picture: you start near one end of the central path (small $\lambda$, near the analytic centre) and walk along the curve, never straying too far from it, until you reach the other end (large $\lambda$, near the optimal vertex). The iterates $\tilde{x}(\lambda_0), \tilde{x}(\lambda_1), \dots$ are not on the curve itself—they orbit nearby. Each Newton step pulls them closer; each $\lambda$ increment nudges them slightly off. The algorithm's art is balancing these two forces.
+
+::: {.callout-note title="Why not just set $\\lambda$ large immediately?"}
+If you jump directly to a very large $\lambda$, the barrier function $f_\lambda$ has a narrow, steep valley near the optimal vertex. Starting from a random interior point, no iterative method would converge quickly—the initial error is enormous. By starting with small $\lambda$ (where $f_\lambda$ is smooth and easy to minimise) and incrementing gradually, each successive problem is only slightly harder than the last. The warm start ensures you're always close to the answer.
+:::
+
+
+## The cost gap: why large $\lambda$ suffices {#sec-cost-gap}
+
+### Gradient condition
+
+Since $f_\lambda$ is strictly convex, its minimiser $x(\lambda)$ satisfies
+
+$$
+\nabla f_\lambda\bigl(x(\lambda)\bigr) = 0.
+$$ {#eq-grad-zero}
+
+The gradient of @eq-barrier-obj is
+
+$$
+\nabla f_\lambda(x) = \lambda\, c - A^\top S(x)^{-1} \mathbf{1},
+$$ {#eq-gradient}
+
+where $S(x) = \operatorname{diag}(s_1(x), \dots, s_m(x))$ is the diagonal slack matrix and $\mathbf{1}$ is the all-ones vector.
+
+### Bounding the gap
+
+Take the inner product of $\nabla f_\lambda(x(\lambda)) = 0$ with $x(\lambda) - x^*$:
+
+$$
+0 = \bigl\langle \nabla f_\lambda(x(\lambda)),\; x(\lambda) - x^* \bigr\rangle.
+$$
+
+Expanding:
+
+$$
+\lambda\, c^\top \bigl(x(\lambda) - x^*\bigr) = \mathbf{1}^\top S\bigl(x(\lambda)\bigr)^{-1}\bigl(s(x(\lambda)) - s(x^*)\bigr).
+$$
+
+The right-hand side simplifies because $A(x(\lambda) - x^*) = s(x(\lambda)) - s(x^*)$ (the $b$'s cancel):
+
+$$
+\lambda\bigl(c^\top x(\lambda) - c^\top x^*\bigr) = \sum_{i=1}^{m} \frac{s_i(x(\lambda)) - s_i(x^*)}{s_i(x(\lambda))}.
+$$
+
+Since $s_i(x^*) \ge 0$ (it's a feasible point), each numerator satisfies $s_i(x(\lambda)) - s_i(x^*) \le s_i(x(\lambda))$, so each fraction is at most 1. This is the only inequality in the entire argument—everything else is algebra and calculus. Summing over $m$ terms:
+
+$$
+c^\top x(\lambda) - c^\top x^* \le \frac{m}{\lambda}.
+$$ {#eq-cost-gap}
+
+::: {.callout-important title="Cost gap bound"}
+The gap between the central-path solution and the true optimum is at most $m/\lambda$. To achieve error $\varepsilon$, set $\lambda \ge m/\varepsilon$.
+:::
+
+
+## How many iterations? {#sec-iteration-count}
+
+### The lambda schedule
+
+The algorithm starts at $\lambda_0$ (exponentially small in $L$, the bit precision) and must reach $\lambda_{\text{final}} = \Theta(m \cdot 2^{O(L)})$ so that $m/\lambda$ is small enough to round to the optimal vertex.
+
+At each step:
+
+$$
+\lambda_{k+1} = \left(1 + \frac{1}{\sqrt{m}}\right) \lambda_k.
+$$ {#eq-lambda-update}
+
+::: {.callout-tip title="Counting the steps"}
+A useful heuristic: $(1 + 1/x)^x \approx e$. So after $\sqrt{m}$ iterations, $\lambda$ grows by a constant factor. To go from $\lambda_0$ to $\lambda_{\text{final}}$, the number of iterations is
+
+$$
+\sqrt{m} \cdot \log\!\left(\frac{\lambda_{\text{final}}}{\lambda_0}\right) = O(\sqrt{m} \cdot L).
+$$
+:::
+
+This $O(\sqrt{m}\, L)$ bound is due to Renegar (1988). Karmarkar's original 1984 algorithm needed $O(mL)$ iterations.
+
+### Recent improvements
+
+Lee and Sidford (FOCS 2014—presented the week before this lecture) improved the bound to $\tilde{O}(\sqrt{\text{rank}(A)} \cdot L)$, where $\tilde{O}$ hides log factors. Since $\text{rank}(A) \le \min(m, n)$, this is never worse and can be significantly better when the constraint matrix is low-rank.
+
+::: {.callout-note title="Aside (mine, not the lecturer's)"}
+As of 2024, the state of the art for LP is $\tilde{O}(\sqrt{\text{rank}} \cdot L)$ iterations, each requiring roughly one linear-system solve. Whether LP admits a **strongly polynomial** algorithm—polynomial in $m$ and $n$ alone, independent of $L$—remains one of Smale's "problems for the 21st century."
+:::
+
+
+## The vague outline, made concrete {#sec-algorithm-outline}
+
+Here is the full algorithm structure. Steps 1–4 are initialisation; step 5 is the main loop.
+
+1. **Modify the LP** to $\text{LP}'$ that has a trivial interior point (add a slack variable with a large penalty in the objective).
+2. **Show** that if the original LP is feasible and bounded, the optimal solution to $\text{LP}'$ encodes the optimal solution to the original LP.
+3. **Obtain** an initial interior point $x'$ for $\text{LP}'$.
+4. **From $x'$,** compute $\tilde{x}(\lambda_0)$—an approximate minimiser of $f_{\lambda_0}$ with $\lambda_0$ very small.
+5. **Main loop:** while $k < K$:
+   a. Use $\tilde{x}(\lambda_k)$ as a warm start for $f_{\lambda_{k+1}}$.
+   b. Run an iterative method (Newton) to refine $\tilde{x}(\lambda_k)$ into $\tilde{x}(\lambda_{k+1})$.
+   c. Increment $k$.
+6. **Round** $\tilde{x}(\lambda_K)$ to the nearest vertex.
+
+<!-- TikZ: flowchart of the 6 steps, with "Modify LP" -> "Check feasibility" -> "Initial interior point" -> "Warm start lambda_0" -> "Main loop (Newton refinement)" -> "Round to vertex" -->
+
+Each iteration of step 5 involves solving a constant number of $n \times n$ linear systems (the dominant cost). The total work is $O(\sqrt{m}\, L)$ system solves.
+
+::: {.callout-note title="Path-following vs. other IPMs"}
+Not all interior point methods follow the central path. Potential-reduction methods, for example, decrease a potential function directly. But path-following methods are the most common in practice and the easiest to analyse, which is why this lecture focuses on them.
+:::
+
+
+## Digression: first-order optimisation {#sec-first-order}
+
+Before tackling Newton's method (Lecture 18), the lecturer builds up from the simpler case: gradient descent. This detour serves two purposes: it introduces the convergence-analysis template (upper-bound the function, choose the step that minimises the bound, show geometric error decay) and it clarifies what "second-order" methods buy you over "first-order" ones.
+
+The goal is to minimise $f : \mathbb{R}^n \to \mathbb{R}$ given two ingredients:
+
+1. **A first-order oracle:** given $x$, returns $f(x)$ and $\nabla f(x)$.
+2. **Hessian bounds:** there exist $0 < \mu \le L$ such that for all $x$,
+
+$$
+\mu I \preceq \nabla^2 f(x) \preceq LI,
+$$ {#eq-hessian-bounds}
+
+where $\preceq$ is the Löwner (positive semidefinite) ordering. In words: every eigenvalue of the Hessian lies in $[\mu, L]$.
+
+::: {.callout-note title="Löwner ordering"}
+$A \preceq B$ means $B - A$ is positive semidefinite: $v^\top(B - A)v \ge 0$ for all $v$. Equivalently, every eigenvalue of $B - A$ is non-negative. The upper bound $\nabla^2 f \preceq LI$ says the function doesn't curve too sharply; the lower bound $\mu I \preceq \nabla^2 f$ says it doesn't flatten out. Together, they say $f$ is **$\mu$-strongly convex** with **$L$-Lipschitz gradient**.
+:::
+
+
+## Gradient descent {#sec-gradient-descent}
+
+### The upper bound from Taylor's theorem
+
+For any two points $x_0, x_1 \in \mathbb{R}^n$, Taylor's theorem with integral remainder gives
+
+$$
+f(x_1) = f(x_0) + \nabla f(x_0)^\top(x_1 - x_0) + \int_0^1 \int_0^t (x_1 - x_0)^\top \nabla^2 f(x_\alpha)(x_1 - x_0)\, d\alpha\, dt,
+$$ {#eq-taylor}
+
+where $x_\alpha = x_0 + \alpha(x_1 - x_0)$.
+
+Using the upper bound $\nabla^2 f(x_\alpha) \preceq LI$:
+
+$$
+f(x_1) \le f(x_0) + \nabla f(x_0)^\top(x_1 - x_0) + \frac{L}{2}\|x_1 - x_0\|^2.
+$$ {#eq-quadratic-upper}
+
+### The update rule
+
+Gradient descent chooses $x_1$ to minimise the right-hand side of @eq-quadratic-upper. The right-hand side is a quadratic in $x_1$ with a known minimum. Differentiate with respect to $x_1$ and set to zero: $\nabla f(x_0) + L(x_1 - x_0) = 0$, giving
+
+$$
+x_{k+1} = x_k - \frac{1}{L}\nabla f(x_k).
+$$ {#eq-gd-update}
+
+The step size $1/L$ is not a tuning parameter—it is determined entirely by the curvature bound. If $L$ is large (the function curves sharply), you take small steps. If $L$ is small (the function is nearly linear), you take large steps. This is why knowing the Hessian bound matters: it gives you the right step size for free.
+
+Substituting back into @eq-quadratic-upper:
+
+$$
+f(x_{k+1}) \le f(x_k) - \frac{1}{2L}\|\nabla f(x_k)\|^2.
+$$ {#eq-gd-progress}
+
+<!-- TikZ: 1D plot showing f(x), the quadratic upper bound tangent at x_k, and the step to x_{k+1} at the upper bound's minimum -->
+
+::: {.callout-tip title="Gradient descent in one sentence"}
+At each step, approximate $f$ by a quadratic upper bound, jump to its minimum, and repeat. The step size $1/L$ ensures you never overshoot.
+:::
+
+### The lower bound from strong convexity
+
+Using $\mu I \preceq \nabla^2 f$ in @eq-taylor (with the inequality reversed):
+
+$$
+f(y) \ge f(x) + \nabla f(x)^\top(y - x) + \frac{\mu}{2}\|y - x\|^2 \quad \forall\, x, y.
+$$ {#eq-strong-convex}
+
+Minimise the right-hand side over $y$:
+
+$$
+f(x^*) \ge f(x) - \frac{1}{2\mu}\|\nabla f(x)\|^2,
+$$
+
+which rearranges to
+
+$$
+\|\nabla f(x)\|^2 \ge 2\mu\bigl(f(x) - f(x^*)\bigr).
+$$ {#eq-grad-lower}
+
+
+### Putting it together: convergence rate
+
+The upper bound (@eq-gd-progress) says each step makes progress proportional to the squared gradient norm. The lower bound (@eq-grad-lower) says the squared gradient norm is at least $2\mu$ times the current error. Chain these together:
+
+$$
+f(x_{k+1}) - f(x^*) \le f(x_k) - f(x^*) - \frac{1}{2L}\|\nabla f(x_k)\|^2 \le \left(1 - \frac{\mu}{L}\right)\bigl(f(x_k) - f(x^*)\bigr).
+$$ {#eq-convergence}
+
+::: {.callout-important title="Gradient descent convergence"}
+Each iteration of gradient descent multiplies the error by at most $\alpha = 1 - \mu/L$. After $k$ iterations:
+$$
+f(x_k) - f(x^*) \le \left(1 - \frac{\mu}{L}\right)^k \bigl(f(x_0) - f(x^*)\bigr).
+$$
+The **condition number** $\kappa = L/\mu$ governs the rate: to halve the error, you need $O(\kappa)$ iterations; to reduce by factor $\varepsilon$, $O(\kappa \log(1/\varepsilon))$ iterations.
+:::
+
+```python
+import numpy as np
+
+def gradient_descent(f, grad_f, x0, L_smooth, n_iter=100):
+    """
+    Minimise f using gradient descent with step size 1/L.
+
+    Parameters
+    ----------
+    f : callable        — objective function
+    grad_f : callable   — gradient of f
+    x0 : ndarray        — initial point
+    L_smooth : float    — Lipschitz constant of the gradient (upper Hessian bound)
+    n_iter : int        — number of iterations
+
+    Returns
+    -------
+    x : ndarray — approximate minimiser
+    history : list of f(x_k) values
+    """
+    x = x0.copy()
+    step = 1.0 / L_smooth
+    history = [f(x)]
+
+    for _ in range(n_iter):
+        x = x - step * grad_f(x)
+        history.append(f(x))
+
+    return x, history
+
+# Example: minimise f(x) = 5*x1^2 + x2^2 (mu=2, L=10, kappa=5)
+f = lambda x: 5 * x[0]**2 + x[1]**2
+grad_f = lambda x: np.array([10 * x[0], 2 * x[1]])
+x0 = np.array([3.0, 4.0])
+
+x_opt, hist = gradient_descent(f, grad_f, x0, L_smooth=10.0, n_iter=50)
+print(f"After 50 steps: x = {x_opt}, f(x) = {hist[-1]:.6e}")
+```
+
+
+## Accelerated gradient descent {#sec-accelerated}
+
+Gradient descent's $O(\kappa \log(1/\varepsilon))$ iteration count is **not optimal** in the first-order oracle model. Nesterov (*Soviet Mathematics Doklady*, 1983) showed that **accelerated gradient descent** achieves
+
+$$
+O\!\left(\sqrt{\kappa}\, \log\frac{1}{\varepsilon}\right) \text{ iterations},
+$$
+
+a quadratic improvement in the condition number. The method adds a "momentum" term that uses the previous iterate's direction.
+
+::: {.callout-note title="Aside (mine, not the lecturer's)"}
+For the interior point application in this course, the condition numbers involved will be $O(1)$, so the distinction between $\kappa$ and $\sqrt{\kappa}$ doesn't matter. But in machine learning and large-scale optimisation, acceleration is essential—it's the difference between practical and impractical for ill-conditioned problems.
+:::
+
+
+## Looking ahead: Newton's method {#sec-newton-preview}
+
+Gradient descent is a **first-order method**: the update depends only on $f$ and $\nabla f$. For the interior point inner loop, the algorithm uses **Newton's method**, a **second-order method** that also uses the Hessian $\nabla^2 f$.
+
+The key differences:
+
+| | Gradient descent | Newton's method |
+|---|---|---|
+| Oracle | $f(x)$, $\nabla f(x)$ | $f(x)$, $\nabla f(x)$, $\nabla^2 f(x)$ |
+| Update | $x - \frac{1}{L}\nabla f(x)$ | $x - [\nabla^2 f(x)]^{-1}\nabla f(x)$ |
+| Per-step cost | $O(n)$ | $O(n^3)$ or one linear-system solve |
+| Convergence | Linear: error $\times (1 - \mu/L)$ | Quadratic (near optimum): error $\to$ error$^2$ |
+
+Newton's method replaces the global quadratic upper bound (gradient descent) with a **local** quadratic model built from the Hessian at the current point. Where gradient descent uses the same step size $1/L$ everywhere (based on a worst-case curvature estimate), Newton's method adapts to the local curvature at each iterate. The payoff: once you're close enough, the error squares at each step—so-called **quadratic convergence**.
+
+Why does this matter for interior point? In the inner loop, each increment of $\lambda$ changes $f_\lambda$ only slightly. The warm start from the previous $\lambda$ is already close to the new minimiser, so Newton's method is already in its quadratic-convergence regime. A constant number of Newton steps—typically just one or two—suffice to bring the error down to the required tolerance. This is what makes the total iteration count $O(\sqrt{m}\, L)$ rather than much larger.
+
+The cost per Newton step is one $n \times n$ linear system solve: $\nabla^2 f(x_k)\, \Delta x = -\nabla f(x_k)$. For dense matrices this is $O(n^3)$; for sparse constraint matrices, fast solvers can do much better. The next lecture will make all of this precise.
+
+<!-- TikZ: 1D comparison of gradient descent (many small parallel steps) vs Newton (few large steps that quickly home in on the minimum) -->
+
+
+## Cheat sheet
+
+::: {.callout-important title="Lecture 17 — key results"}
+
+**Interior point setup**
+
+- Barrier objective: $f_\lambda(x) = \lambda\, c^\top x - \sum_i \ln(s_i(x))$.
+- Gradient: $\nabla f_\lambda(x) = \lambda c - A^\top S(x)^{-1}\mathbf{1}$.
+- Analytic centre: minimiser when $\lambda = 0$.
+
+**Cost gap**
+
+- $c^\top x(\lambda) - c^\top x^* \le m/\lambda$.
+- To achieve error $\varepsilon$: need $\lambda \ge m/\varepsilon$.
+
+**Path-following algorithm**
+
+- Start: $\lambda_0 = e^{-O(L)}$.
+- Update: $\lambda_{k+1} = (1 + 1/\sqrt{m})\,\lambda_k$.
+- Stop: $\lambda_K = \Theta(m \cdot e^{O(L)})$.
+- Iterations: $O(\sqrt{m}\, L)$.
+- Per iteration: constant number of $n \times n$ linear system solves.
+
+**Gradient descent**
+
+- Update: $x_{k+1} = x_k - \frac{1}{L}\nabla f(x_k)$.
+- Progress: $f(x_{k+1}) \le f(x_k) - \frac{1}{2L}\|\nabla f(x_k)\|^2$.
+- Convergence: error $\times \bigl(1 - \frac{\mu}{L}\bigr)$ per step.
+- To halve error: $O(L/\mu) = O(\kappa)$ steps.
+
+**Key constants**
+
+- $L$: upper bound on Hessian eigenvalues (smoothness).
+- $\mu$: lower bound on Hessian eigenvalues (strong convexity).
+- $\kappa = L/\mu$: condition number.
+- Nesterov acceleration: $O(\sqrt{\kappa}\log(1/\varepsilon))$ iterations (optimal for first-order methods).
+:::
+
+
+## FAQ — questions students actually asked {#sec-faq}
+
+**Q: How many steps does it take to actually minimise $f_\lambda$ inside each iteration?**
+The algorithm doesn't compute exact minimisers—it computes *approximate* minimisers. In the path-following framework, the warm start from the previous $\lambda$ is close enough that a constant number of Newton steps suffice. Each Newton step involves solving one $n \times n$ linear system.
+
+**Q: Do you always have a bound on one higher order of derivative than you use?**
+Not always. For gradient descent (first-order), you need bounds on the Hessian (second-order). For Newton's method (second-order), the interior point analysis uses a different kind of control—self-concordance—rather than bounds on third derivatives.
+
+**Q: Newton's method normally just uses the gradient but achieves second-order convergence—right?**
+Not quite. Standard Newton's method computes and inverts the Hessian at each step: $x_{k+1} = x_k - [\nabla^2 f(x_k)]^{-1}\nabla f(x_k)$. It achieves quadratic convergence near the optimum. "Quasi-Newton" methods (like BFGS) approximate the Hessian using only gradient information.
+
+**Q: What's the bit precision $L$ in terms of the input?**
+$L$ captures the number of bits needed to represent the LP's data: $L \sim \log\|b\|_\infty + \log(\max \text{submatrix determinant of } A) + \log\|c\|_\infty + \log m + \log n$. Different papers define it slightly differently—some fold $\log m$ and $\log n$ into $L$, which is why some write the iteration count as $O(\sqrt{m}\, L)$ and others as $O(\sqrt{m}(L + \log m))$.
+
+**Q: How do you ensure the optimal vertex is unique?**
+Perturb the cost vector $c$ at very low-order bits (beyond the $L$-th bit of precision). The perturbation is too small to change which vertex is optimal (vertices are separated by at least $2^{-O(L)}$ in cost), but it breaks ties generically, making the optimum unique with probability 1.
+
+
+## Further reading {#sec-further-reading}
+
+1. **Karmarkar, N.** "A new polynomial-time algorithm for linear programming." *Combinatorica* 4(4), 1984. The original interior point method for LP.
+2. **Renegar, J.** "A polynomial-time algorithm, based on Newton's method, for linear programming." *Mathematical Programming* 40(1), 1988. Improved the iteration count to $O(\sqrt{m}\, L)$.
+3. **Lee, Y. T. and Sidford, A.** "Path finding methods for linear programming: solving linear programs in $\tilde{O}(\sqrt{\text{rank}})$ iterations and faster algorithms for maximum flow." *FOCS*, 2014. State-of-the-art rank-dependent bound.
+4. **Nesterov, Y.** "A method of solving a convex programming problem with convergence rate $O(1/k^2)$." *Soviet Mathematics Doklady* 27(2), 1983. Accelerated gradient descent.
+5. **Boyd, S. and Vandenberghe, L.** *Convex Optimization.* Cambridge University Press, 2004, Chapters 9–11. The standard textbook treatment of barrier methods and Newton's method.
+6. **Nesterov, Y. and Nemirovski, A.** *Interior-Point Polynomial Algorithms in Convex Programming.* SIAM, 1994. Comprehensive monograph on self-concordance and interior point theory.
+
+
+## Try it yourself {#sec-exercises}
+
+1. **Cost gap calculation.** An LP has $m = 100$ constraints. You want the cost gap $c^\top x(\lambda) - c^\top x^*$ to be at most $10^{-6}$. What value of $\lambda$ suffices? Starting from $\lambda_0 = 10^{-10}$ with the update $\lambda_{k+1} = (1 + 1/\sqrt{m})\lambda_k$, how many iterations are needed?
+
+2. **Gradient descent convergence.** Consider $f(x) = \frac{1}{2}x^\top Q x$ where $Q = \operatorname{diag}(1, 100)$. What are $\mu$, $L$, and $\kappa$? Starting from $x_0 = (1, 1)^\top$, run 200 steps of gradient descent and plot $f(x_k) - f(x^*)$ on a log scale. Verify that the slope matches $\log(1 - \mu/L)$.
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+
+Q = np.diag([1.0, 100.0])
+mu, L_smooth = 1.0, 100.0
+
+f = lambda x: 0.5 * x @ Q @ x
+grad_f = lambda x: Q @ x
+
+x = np.array([1.0, 1.0])
+errors = []
+for _ in range(200):
+    errors.append(f(x))
+    x = x - (1.0 / L_smooth) * grad_f(x)
+
+plt.semilogy(errors)
+plt.xlabel("Iteration k")
+plt.ylabel("f(x_k) - f(x*)")
+plt.title(f"Gradient descent: kappa = {L_smooth/mu:.0f}")
+plt.show()
+```
+
+3. **Central path visualisation.** For the 2D LP $\min -x_1 - x_2$ subject to $x_1 \le 3$, $x_2 \le 2$, $x_1 + x_2 \le 4$, $x_1, x_2 \ge 0$: write the barrier function $f_\lambda(x)$ and, for $\lambda \in \{0.1, 1, 10, 100\}$, numerically compute the minimiser using `scipy.optimize.minimize`. Plot the four points inside the feasible region and observe how they trace the central path toward the optimal vertex $(2, 2)$.
+
+4. **Condition number experiment.** Generate random quadratic functions $f(x) = \frac{1}{2}x^\top Q x$ with $Q$ having condition number $\kappa \in \{10, 100, 1000\}$. For each, run gradient descent and measure how many iterations are needed to reduce the error by a factor of $10^{-4}$. Verify the linear relationship between iteration count and $\kappa$.
+
+5. **Implementing the lambda schedule.** Write a function that computes the sequence $\lambda_0, \lambda_1, \dots, \lambda_K$ for given $m$, $L$ (bit precision), $\lambda_0$, and stopping threshold. Return the number of iterations $K$.
+
+```python
+import math
+
+def lambda_schedule(m, L_bits, lam0=None, target_gap=1e-10):
+    """
+    Compute the path-following lambda schedule.
+
+    Parameters
+    ----------
+    m : int — number of constraints
+    L_bits : int — bit precision
+    lam0 : float — initial lambda (default: 2^{-L_bits})
+    target_gap : float — desired cost gap m/lambda
+
+    Returns
+    -------
+    K : int — number of iterations
+    lam_final : float — final lambda value
+    """
+    if lam0 is None:
+        lam0 = 2.0 ** (-L_bits)
+    lam_target = m / target_gap
+    factor = 1.0 + 1.0 / math.sqrt(m)
+
+    K = math.ceil(math.log(lam_target / lam0) / math.log(factor))
+    lam_final = lam0 * factor ** K
+
+    return K, lam_final
+
+K, lam_f = lambda_schedule(m=100, L_bits=32)
+print(f"Iterations: {K}, final lambda: {lam_f:.2e}")
+# Compare with O(sqrt(m) * L) estimate:
+print(f"sqrt(m)*L estimate: {math.sqrt(100) * 32:.0f}")
+```

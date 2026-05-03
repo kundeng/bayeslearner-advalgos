@@ -1,0 +1,485 @@
+---
+title: "FPTAS, DNF Counting, and Semidefinite Programming"
+subtitle: "COMPSCI 224 Lecture 12 — Fall 2014"
+author: "Companion notes by Kun Deng"
+date: today
+abstract: |
+  Three distinct ideas, unified by the theme "relax and round." An
+  FPTAS for knapsack rounds item values to shrink the DP table, losing
+  at most $\varepsilon \cdot \text{OPT}$. An FPRAS for DNF counting
+  (Karp–Luby–Madras, 1989) sidesteps the difficulty of sampling rare
+  satisfying assignments by inflating the sample space with a disjoint
+  union trick that guarantees the hit probability is at least $1/m$.
+  Semidefinite programming generalises LP by replacing non-negativity
+  with positive-semidefiniteness; the Goemans–Williamson algorithm
+  (1995) uses an SDP relaxation and random hyperplane rounding to cut
+  at least $0.878 \cdot \text{OPT}$ edges in Max-Cut — shattering the
+  $1/2$ barrier that had stood for decades.
+---
+
+## Why this lecture matters {#sec-why}
+
+The FPTAS for knapsack is the canonical example of how rounding input data can make an exponential DP polynomial — a trick that shows up everywhere from streaming algorithms to compiler optimization. DNF counting introduces the idea of *importance sampling* against a disjoint union, a technique that recurs in randomized algorithms for counting and sampling. And the Goemans–Williamson Max-Cut algorithm opened the era of SDP-based approximation, inspiring dozens of results in combinatorial optimization.
+
+::: {.callout-tip title="The 30-second story"}
+1. **FPTAS for knapsack:** scale and round item values so the DP table has $O(n^2/\varepsilon)$ entries. The rounding error per item is at most 1 (in the new scale), and there are at most $n$ items, so total loss is $\le \varepsilon \cdot \text{OPT}$.
+2. **Strongly NP-hard** problems like bin packing *cannot* have an FPTAS (unless P = NP), because their optimal value is a small integer — any multiplicative $(1+\varepsilon)$ approximation with $\varepsilon$ small enough would be exact.
+3. **FPRAS for DNF counting** (Karp–Luby–Madras): build a disjoint union $B'$ over all clause-assignment pairs, guaranteeing hit probability $\ge 1/m$. Sample from $B'$, check if the assignment's first satisfied clause matches — Chernoff gives $O(m/\varepsilon^2)$ samples suffice.
+4. **SDP** generalises LP: variables are matrix entries, non-negativity becomes positive-semidefiniteness. Equivalently: "vector programming" where variables are dot products $v_i \cdot v_j$.
+5. **Goemans–Williamson** for Max-Cut: solve the SDP relaxation, round by picking a random hyperplane. Each edge is cut with probability $\theta_{ij}/\pi$, yielding a $0.878$-approximation.
+:::
+
+
+## FPTAS for knapsack {#sec-fptas}
+
+### The rounding idea {#sec-rounding-idea}
+
+Recall the knapsack problem: $n$ items with weights $w_i$ and values $v_i$, knapsack capacity $W$. Last lecture we saw two pseudo-polynomial DPs:
+
+- $O(nW)$: tabulate by remaining capacity.
+- $O(nV)$: tabulate by target value, where $V = \sum v_i$.
+
+The $O(nV)$ DP is fast when values are small. The FPTAS *makes* values small by rescaling and rounding.
+
+### The algorithm {#sec-fptas-alg}
+
+Let $v_{\max} = \max_i v_i$. Define new values:
+
+$$
+v'_i = \left\lfloor \frac{n}{\varepsilon} \cdot \frac{v_i}{v_{\max}} \right\rfloor.
+$$ {#eq-rounded-values}
+
+Run the exact $O(nV')$ DP on the instance with values $v'_i$ (keeping original weights). Let $A$ be the set of items returned.
+
+**Running time.** Each $v'_i \le n/\varepsilon$, so $V' = \sum v'_i \le n^2/\varepsilon$. The DP runs in $O(n \cdot V') = O(n^3/\varepsilon)$.
+
+```python
+import math
+
+def knapsack_fptas(weights, values, W, epsilon):
+    n = len(weights)
+    v_max = max(values)
+    alpha = n / (epsilon * v_max)
+
+    # Round values
+    v_prime = [math.floor(alpha * v) for v in values]
+    V_prime = sum(v_prime)
+
+    # DP by value: g[i][p] = min weight to achieve value exactly p
+    #              using items 0..i-1
+    INF = float('inf')
+    g = [[INF] * (V_prime + 1) for _ in range(n + 1)]
+    g[0][0] = 0
+
+    for i in range(1, n + 1):
+        for p in range(V_prime + 1):
+            g[i][p] = g[i-1][p]  # don't take item i
+            if p >= v_prime[i-1] and g[i-1][p - v_prime[i-1]] + weights[i-1] <= W:
+                g[i][p] = min(g[i][p], g[i-1][p - v_prime[i-1]] + weights[i-1])
+
+    # Find maximum achievable value
+    best_p = max(p for p in range(V_prime + 1) if g[n][p] <= W)
+
+    # Backtrack to find the set A
+    A = []
+    p = best_p
+    for i in range(n, 0, -1):
+        if g[i][p] != g[i-1][p]:
+            A.append(i - 1)
+            p -= v_prime[i-1]
+
+    return sum(values[j] for j in A)
+```
+
+### Correctness proof {#sec-fptas-proof}
+
+The scaling factor is $\alpha = n / (\varepsilon \cdot v_{\max})$. For any set $S \subseteq \{1, \ldots, n\}$, the rounded value relates to the original:
+
+$$
+\alpha \cdot v(S) - |S| \le v'(S) \le \alpha \cdot v(S).
+$$ {#eq-rounding-bounds}
+
+The left inequality holds because each floor loses at most 1. The right inequality is immediate.
+
+Let $A^*$ be the optimal set for the original problem. Then:
+
+$$
+v(A) \ge \frac{1}{\alpha} \cdot v'(A) \ge \frac{1}{\alpha} \cdot v'(A^*) \ge \frac{1}{\alpha}\bigl(\alpha \cdot v(A^*) - |A^*|\bigr) \ge \text{OPT} - \frac{n}{\alpha} = \text{OPT} - \varepsilon \cdot v_{\max}.
+$$
+
+Since $v_{\max} \le \text{OPT}$:
+
+$$
+v(A) \ge (1 - \varepsilon) \cdot \text{OPT}.
+$$
+
+::: {.callout-tip}
+The core insight: multiplying all values by a constant doesn't change the optimal *set* — only rounding does. Rounding loses at most 1 per item (in the new scale), and $n$ items $\times$ 1 unit each $= n$ total loss, which is at most $\varepsilon$ times the (rescaled) optimum.
+:::
+
+
+## When FPTAS is impossible: strongly NP-hard problems {#sec-strongly-np-hard}
+
+Not every NP-hard problem has an FPTAS. A problem is **strongly NP-hard** if it remains NP-hard even when all numbers in the input are polynomial in the input size.
+
+### Bin packing {#sec-bin-packing}
+
+**Input.** $n$ items with sizes $s_1, \ldots, s_n \in (0, 1]$. Bins have capacity 1. **Goal.** Pack all items into as few bins as possible. No splitting.
+
+The decision problem "can these items fit in 2 bins?" is already NP-complete (it reduces from partition). This kills any FPTAS:
+
+::: {.callout-important title="No FPTAS for bin packing"}
+An FPTAS with $\varepsilon \ll 1/n$ would give a packing using at most $(1 + \varepsilon) \cdot \text{OPT}$ bins. Since the number of bins is an integer, this would be *exactly* OPT bins — solving NP-complete problems in polynomial time.
+:::
+
+<!-- TikZ: Two bins side by side, each with capacity 1. Items of various sizes stacked inside. One item overflows, illustrating that the 2-bin packing decision is hard. Label: "Even deciding if 2 bins suffice is NP-complete." -->
+
+::: {.callout-note title="Aside (mine, not the lecturer's)"}
+Bin packing *does* admit an asymptotic PTAS: de la Vega and Lueker (1981) showed how to achieve $(1+\varepsilon) \cdot \text{OPT} + O(1/\varepsilon^2)$ bins. The additive constant matters — it prevents the argument above from giving an exact algorithm.
+:::
+
+
+## FPRAS for DNF counting {#sec-fpras-dnf}
+
+### The problem {#sec-dnf-problem}
+
+A DNF formula is an OR of clauses, where each clause is an AND of literals:
+
+$$
+\phi = C_1 \lor C_2 \lor \cdots \lor C_m, \qquad C_i = (\ell_{i,1} \land \ell_{i,2} \land \cdots \land \ell_{i,r_i}).
+$$
+
+**DNF satisfiability** is easy: check each clause independently. But **DNF counting** — how many of the $2^n$ assignments satisfy $\phi$? — is #P-complete. The proof: negate a CNF formula to get a DNF; the number of satisfying assignments of the DNF tells you the number of satisfying assignments of the original CNF (it's $2^n$ minus that count).
+
+::: {.callout-warning}
+Exact counting is #P-hard, but approximate counting might still be tractable. The proof of hardness relies on distinguishing 0 from nonzero — any multiplicative $(1 \pm \varepsilon)$ approximation cannot make that distinction.
+:::
+
+### Why naive sampling fails {#sec-naive-fails}
+
+Let $p$ be the fraction of $2^n$ assignments that satisfy $\phi$. The obvious algorithm: sample random assignments, check each, estimate $p$ by the empirical fraction. By Chernoff, $O(1/(p\varepsilon^2))$ samples suffice for $(1 \pm \varepsilon)$ accuracy.
+
+The problem: $p$ can be as small as $2^{-n}$ (e.g., $\phi = x_1 \land x_2 \land \cdots \land x_n$). Then you need $\Omega(2^n)$ samples.
+
+<!-- TikZ: Large rectangle representing the space of 2^n assignments. Tiny shaded region in the corner representing satisfying assignments (p very small). Random sample points scattered across the rectangle, none hitting the shaded region. Caption: "When p is tiny, random sampling almost never finds a satisfying assignment." -->
+
+### The Karp–Luby–Madras trick {#sec-klm}
+
+The idea: build a larger sample space where the "hit probability" is at least $1/m$.
+
+**Step 1: Define the inflated set $B'$.**
+
+Let $S_i$ be the set of assignments satisfying clause $C_i$. The set we want to estimate is $B = \bigcup_{i=1}^m S_i$.
+
+Define the **disjoint union**:
+
+$$
+B' = \bigsqcup_{i=1}^m S_i = \{(i, x) : x \text{ satisfies } C_i\}.
+$$ {#eq-b-prime}
+
+Each satisfying assignment $x \in B$ appears in $B'$ once for every clause it satisfies. So $|B'| \ge |B|$ and $|B'| \le m \cdot |B|$.
+
+**Step 2: Compute $|B'|$ exactly.** Each $|S_i| = 2^{n - r_i}$ where $r_i$ is the number of literals in clause $C_i$. So $|B'| = \sum_i 2^{n - r_i}$ — computable in $O(m)$ time.
+
+**Step 3: Estimate $p' = |B|/|B'|$.** Since each element of $B$ appears at most $m$ times in $B'$:
+
+$$
+p' = \frac{|B|}{|B'|} \ge \frac{1}{m}.
+$$ {#eq-p-prime-bound}
+
+This is the key: $p'$ is not too small.
+
+**Step 4: Sample from $B'$.** To sample a uniformly random element $(i, x) \in B'$:
+
+1. **Pick a clause** $C_i$ with probability $|S_i| / |B'|$ (proportional to its solution count).
+2. **Pick a random satisfying assignment** for $C_i$: set the $r_i$ constrained variables as required, set the remaining $n - r_i$ variables uniformly at random.
+
+<!-- TikZ: Venn diagram of three overlapping sets S_1, S_2, S_3. Each set has labeled size 2^{n-r_i}. The union B is shaded. The disjoint union B' is shown as three separate copies of the sets laid side by side (no overlap). An arrow maps each copy to the original, with a checkmark on the "first clause" copy and X marks on duplicates. -->
+
+**Step 5: Check membership in $B$.** Given a sampled pair $(i, x)$, check whether $i$ is the *first* clause that $x$ satisfies. If yes, count it as a "hit." This implements the bijection $B \leftrightarrow \{(i, x) \in B' : i = \min\{j : x \in S_j\}\}$.
+
+### The full algorithm {#sec-klm-algorithm}
+
+1. Sample $T$ elements from $B'$.
+2. Let $\tilde{p}'$ = fraction of samples that are "hits" (first-clause matches).
+3. Output $\tilde{p}' \cdot |B'|$.
+
+```python
+import random
+
+def dnf_count_fpras(clauses, n, epsilon, delta=1/3):
+    """
+    Estimate number of satisfying assignments for a DNF.
+    clauses: list of lists, each inner list contains signed variable indices
+             (positive = true, negative = negated).
+    n: number of variables.
+    """
+    m = len(clauses)
+
+    # Compute |S_i| for each clause
+    sizes = [2 ** (n - len(c)) for c in clauses]
+    B_prime_size = sum(sizes)
+
+    # Number of samples needed: O(m / (epsilon^2) * log(1/delta))
+    import math
+    T = int(3 * m * math.log(2 / delta) / epsilon ** 2) + 1
+
+    hits = 0
+    for _ in range(T):
+        # Step 1: pick clause i proportional to |S_i|
+        r = random.random() * B_prime_size
+        cumulative = 0
+        chosen_clause = 0
+        for i, s in enumerate(sizes):
+            cumulative += s
+            if r < cumulative:
+                chosen_clause = i
+                break
+
+        # Step 2: pick random satisfying assignment for clause i
+        assignment = [random.choice([True, False]) for _ in range(n)]
+        for lit in clauses[chosen_clause]:
+            var = abs(lit) - 1
+            assignment[var] = (lit > 0)
+
+        # Step 3: check if chosen_clause is the FIRST satisfied clause
+        first = None
+        for j, clause in enumerate(clauses):
+            if all(assignment[abs(lit)-1] == (lit > 0) for lit in clause):
+                first = j
+                break
+        if first == chosen_clause:
+            hits += 1
+
+    p_prime_estimate = hits / T
+    return p_prime_estimate * B_prime_size
+```
+
+### Analysis via Chernoff {#sec-klm-analysis}
+
+Let $X_j$ be the indicator that sample $j$ is a hit. Then $\mathbb{E}[X] = p' T$ where $X = \sum X_j$.
+
+The algorithm fails when $|X - p'T| > \varepsilon \cdot p'T$. By the Chernoff bound:
+
+$$
+\Pr\bigl[|X - \mathbb{E}[X]| > \varepsilon \cdot \mathbb{E}[X]\bigr] \le 2\exp\!\left(-\frac{\varepsilon^2 \cdot p' T}{3}\right).
+$$
+
+This is at most $\delta$ when:
+
+$$
+T \ge \frac{3 \ln(2/\delta)}{\varepsilon^2 \cdot p'} \le \frac{3m \ln(2/\delta)}{\varepsilon^2}.
+$$ {#eq-sample-count}
+
+For $\delta = 1/3$: $T = O(m/\varepsilon^2)$. Each sample takes $O(nm)$ time to check, so the total is $O(nm^2/\varepsilon^2)$ — polynomial in $n$, $m$, and $1/\varepsilon$.
+
+
+## Semidefinite programming {#sec-sdp}
+
+### From LP to SDP {#sec-lp-to-sdp}
+
+In linear programming, the variable is a vector $x \in \mathbb{R}^n$ with a non-negativity constraint $x \ge 0$. In **semidefinite programming**, the variable is a symmetric matrix $X \in \mathbb{R}^{n \times n}$ with a positive-semidefiniteness constraint $X \succeq 0$:
+
+$$
+\min \operatorname{tr}(C^\top X) \quad \text{s.t.} \quad \operatorname{tr}(A_i^\top X) = b_i \;\;\forall\, i, \quad X \succeq 0.
+$$ {#eq-sdp}
+
+The trace inner product $\operatorname{tr}(A^\top B) = \sum_{i,j} A_{ij} B_{ij}$ is just the dot product of $A$ and $B$ viewed as $n^2$-dimensional vectors. So an SDP is an LP over $n^2$ variables — plus the PSD constraint.
+
+::: {.callout-tip}
+**LP as a special case of SDP.** Take $C$, $A_i$, and $X$ to be diagonal matrices. Then $X \succeq 0$ means all diagonal entries are non-negative (= the eigenvalues), and $\operatorname{tr}(C^\top X) = c^\top x$. Ordinary LP falls out as a special case.
+:::
+
+### Positive semidefiniteness: three views {#sec-psd}
+
+For a symmetric matrix $X \in \mathbb{R}^{n \times n}$, the following are equivalent:
+
+1. **Quadratic form.** $y^\top X y \ge 0$ for all $y \in \mathbb{R}^n$.
+2. **Eigenvalues.** All eigenvalues of $X$ are non-negative (spectral theorem).
+3. **Gram matrix.** $X = M^\top M$ for some real matrix $M$. Equivalently, $X_{ij} = v_i \cdot v_j$ where $v_1, \ldots, v_n$ are the columns of $M$.
+
+The third view is the most useful for approximation algorithms: it says optimizing over PSD matrices is the same as optimizing over *dot products of vectors*.
+
+### Vector programming {#sec-vp}
+
+Rewrite the SDP using the Gram matrix decomposition $X_{ij} = v_i \cdot v_j$:
+
+$$
+\min \sum_{i,j} C_{ij}\, v_i \cdot v_j \quad \text{s.t.} \quad \sum_{i,j} (A_k)_{ij}\, v_i \cdot v_j = b_k \;\;\forall\, k.
+$$ {#eq-vp}
+
+No explicit PSD constraint — it is built into the structure. The variables are now vectors $v_1, \ldots, v_n \in \mathbb{R}^n$, and every constraint is linear in the dot products.
+
+::: {.callout-note}
+SDPs can be solved in polynomial time up to $\ell$ bits of precision in time $\text{poly}(n, m, \ell)$. The standard reference is Boyd and Vandenberghe, *Convex Optimization* (2004). For this lecture, treat the SDP solver as a black box.
+:::
+
+<!-- TikZ: Diagram showing the hierarchy: Integer Program → LP relaxation (replace x ∈ {0,1} with x ∈ [0,1]) → SDP relaxation (replace scalar x_i with vector v_i, products x_i·x_j with dot products v_i·v_j). Arrow labels: "relax integrality", "lift to vectors". -->
+
+
+## Max-Cut and the Goemans–Williamson algorithm {#sec-max-cut}
+
+### The problem {#sec-max-cut-def}
+
+Given an undirected graph $G = (V, E)$, find a partition $(S, V \setminus S)$ that maximizes the number of edges crossing the cut. Max-Cut is NP-hard.
+
+### The $1/2$ barrier {#sec-half-barrier}
+
+Two simple algorithms both achieve a $1/2$-approximation:
+
+**Random partition.** For each vertex, flip a coin — left or right. Every edge crosses with probability $1/2$, so the expected cut is $|E|/2 \ge \text{OPT}/2$.
+
+**Local search.** Start with any partition. While some vertex has more neighbors on its own side than the other, swap it. This terminates (cut size strictly increases) and at termination, every vertex has $\ge$ half its neighbors across the cut, so the cut is $\ge |E|/2$.
+
+For decades, no polynomial-time algorithm beat $1/2$. Then Goemans and Williamson used SDP.
+
+### Quadratic program formulation {#sec-qp}
+
+Assign $x_i \in \{-1, +1\}$ to each vertex ($-1$ = left, $+1$ = right). The number of crossing edges is:
+
+$$
+\sum_{(i,j) \in E} \frac{1 - x_i x_j}{2}.
+$$ {#eq-max-cut-qp}
+
+If $x_i = x_j$ (same side), the term is 0. If $x_i \ne x_j$ (opposite sides), the term is 1.
+
+### SDP relaxation {#sec-sdp-relax}
+
+Replace each scalar $x_i \in \{-1, +1\}$ with a unit vector $v_i \in \mathbb{R}^n$. Replace multiplication $x_i x_j$ with dot product $v_i \cdot v_j$:
+
+$$
+\max \sum_{(i,j) \in E} \frac{1 - v_i \cdot v_j}{2} \quad \text{s.t.} \quad v_i \cdot v_i = 1 \;\;\forall\, i.
+$$ {#eq-max-cut-sdp}
+
+This is a vector program (= SDP) and can be solved in polynomial time. The constraint $v_i \cdot v_i = 1$ says each vector lies on the unit sphere.
+
+<!-- TikZ: Unit circle with several unit vectors v_1, ..., v_5 drawn from the origin. Pairs connected by edges in the graph are linked with dashed lines. The angle theta_{ij} between v_i and v_j is labeled. A random hyperplane (dashed line through origin) separates some vectors from others. Vectors on one side are colored blue (set S), on the other red (set V\S). -->
+
+### Rounding: random hyperplane {#sec-gw-rounding}
+
+The Goemans–Williamson algorithm:
+
+1. Solve the SDP to get unit vectors $v_1, \ldots, v_n$.
+2. Pick a random vector $r \in \mathbb{R}^n$ (e.g., each coordinate i.i.d. standard Gaussian).
+3. Put vertex $i$ in $S$ if $r \cdot v_i \ge 0$, otherwise in $V \setminus S$.
+
+### Analysis {#sec-gw-analysis}
+
+For an edge $(i, j)$, the probability it is cut equals the probability that $r$ separates $v_i$ and $v_j$. Since $v_i$ and $v_j$ are unit vectors with angle $\theta_{ij}$ between them, the random hyperplane (normal to $r$) separates them with probability:
+
+$$
+\Pr[\text{edge } (i,j) \text{ is cut}] = \frac{\theta_{ij}}{\pi}.
+$$ {#eq-cut-prob}
+
+The SDP objective for this edge is $(1 - v_i \cdot v_j)/2 = (1 - \cos\theta_{ij})/2$. So the ratio of the algorithm's expected gain to the SDP's value on edge $(i,j)$ is:
+
+$$
+\frac{\theta_{ij}/\pi}{(1 - \cos\theta_{ij})/2} = \frac{2\theta_{ij}}{\pi(1 - \cos\theta_{ij})}.
+$$ {#eq-gw-ratio}
+
+::: {.callout-important title="The Goemans–Williamson guarantee"}
+The minimum of @eq-gw-ratio over $\theta \in (0, \pi]$ is:
+
+$$
+\alpha_{\text{GW}} = \min_{0 < \theta \le \pi} \frac{2\theta}{\pi(1 - \cos\theta)} \approx 0.878.
+$$
+
+Therefore $\mathbb{E}[\text{cut}] \ge \alpha_{\text{GW}} \cdot \text{SDP-OPT} \ge 0.878 \cdot \text{OPT}$.
+:::
+
+```python
+import numpy as np
+
+def goemans_williamson_round(vectors):
+    """
+    Given unit vectors v_1, ..., v_n (rows of 'vectors'),
+    perform random hyperplane rounding.
+    Returns: set S (list of vertex indices on one side of the cut).
+    """
+    n, d = vectors.shape
+    r = np.random.randn(d)           # random hyperplane normal
+    projections = vectors @ r         # dot products r · v_i
+    S = [i for i in range(n) if projections[i] >= 0]
+    return S
+```
+
+::: {.callout-note title="Aside (mine, not the lecturer's)"}
+Khot, Kindler, Mossel, and O'Donnell (2007) showed that under the Unique Games Conjecture, $\alpha_{\text{GW}} \approx 0.878$ is the best possible approximation ratio for Max-Cut. So the GW algorithm may be *optimal* — not just among SDP-based methods, but among all polynomial-time algorithms.
+:::
+
+
+## Cheat sheet {#sec-cheat-sheet}
+
+::: {.callout-important title="Cheat sheet — Lecture 12"}
+
+**FPTAS for knapsack.**
+Scale values: $v'_i = \lfloor (n/\varepsilon) \cdot v_i / v_{\max} \rfloor$. Run $O(nV')$ DP. Rounding loses $\le 1$ per item $\Rightarrow \le n$ total $\le \varepsilon \cdot \text{OPT}'$. Time: $O(n^3/\varepsilon)$.
+
+**Strongly NP-hard.** No FPTAS unless P = NP. Test: if OPT is a small integer, any $(1+\varepsilon)$-approximation with $\varepsilon < 1/\text{OPT}$ would be exact. Example: bin packing (even deciding if 2 bins suffice is NP-complete).
+
+**FPRAS for DNF counting (KLM).**
+
+- $B = \bigcup S_i$ (satisfying assignments), $B' = \bigsqcup S_i$ (disjoint union, each $x$ appears once per satisfied clause).
+- $|B'|$ is easy to compute: $\sum 2^{n - r_i}$.
+- Sample from $B'$: pick clause $i \propto |S_i|$, random satisfying assignment.
+- Check: is $i$ the *first* clause $x$ satisfies? Hit probability $p' \ge 1/m$.
+- Samples needed: $T = O(m \log(1/\delta) / \varepsilon^2)$ by Chernoff.
+
+**SDP = Vector programming.**
+
+| LP | SDP |
+|----|-----|
+| Variables: $x_i \in \mathbb{R}$ | Variables: $X_{ij}$ (or vectors $v_i$) |
+| Constraint: $x \ge 0$ | Constraint: $X \succeq 0$ |
+| Objective: $c^\top x$ | Objective: $\operatorname{tr}(C^\top X)$ |
+
+**Max-Cut (Goemans–Williamson).**
+Relax $x_i \in \{-1,+1\}$ to $v_i \in \mathbb{R}^n$, $\|v_i\| = 1$. Solve SDP. Round: random hyperplane $r$, put $i$ in $S$ iff $r \cdot v_i \ge 0$. Cut probability per edge: $\theta_{ij}/\pi$. Ratio: $\alpha_{\text{GW}} = \min_\theta \frac{2\theta}{\pi(1-\cos\theta)} \approx 0.878$.
+:::
+
+
+## FAQ — questions students actually asked {#sec-faq}
+
+**Q: Can knapsack be solved exactly in polynomial time using the FPTAS with very small $\varepsilon$?**
+No. If all values are integers, OPT is an integer, so setting $\varepsilon < 1/(n \cdot v_{\max})$ would give an exact answer. But then $1/\varepsilon > n \cdot v_{\max}$, and the running time $\text{poly}(n, 1/\varepsilon)$ becomes $\text{poly}(n, n \cdot v_{\max})$ — pseudo-polynomial, not truly polynomial. Writing $v_{\max}$ takes only $\log v_{\max}$ bits.
+
+**Q: Is there a deterministic FPTAS for DNF counting?**
+This is an open question. The best known deterministic algorithms for approximate counting problems related to #P are significantly more complex and often require additional structural assumptions.
+
+**Q: For the KLM algorithm, why can't you just sample a random assignment and check all clauses?**
+You can, but if the fraction $p$ of satisfying assignments is exponentially small (e.g., $\phi = x_1 \land \cdots \land x_n$), you need exponentially many samples before you ever see a satisfying one. The disjoint-union trick ensures the hit probability is at least $1/m$, so $O(m/\varepsilon^2)$ samples suffice.
+
+**Q: Why is $p'$ at least $1/m$?**
+Every satisfying assignment $x \in B$ appears in $B'$ at least once (for some clause) and at most $m$ times (once per clause). So $|B'| \le m \cdot |B|$, hence $p' = |B|/|B'| \ge 1/m$.
+
+**Q: In the SDP relaxation of Max-Cut, why are the vectors $n$-dimensional?**
+The Gram matrix $X$ is $n \times n$, so $X = M^\top M$ where $M$ has $n$ columns — each column is a vector $v_i \in \mathbb{R}^n$. In practice, the SDP optimum often has much lower rank, so fewer dimensions suffice.
+
+**Q: What is the probability that $r$ separates $v_i$ and $v_j$?**
+The vectors $v_i$ and $v_j$ span a 2D plane. In that plane, they make angle $\theta_{ij}$. The random hyperplane's normal $r$ is rotationally symmetric, so the hyperplane is equally likely to point in any direction. The fraction of directions that separate $v_i$ from $v_j$ is exactly $\theta_{ij}/\pi$ (the angle subtended, divided by the half-circle).
+
+
+## Further reading {#sec-further-reading}
+
+- **Lawler (1979).** "Fast approximation algorithms for knapsack problems." *Mathematics of Operations Research*. Gives an FPTAS with running time $O(n \log(1/\varepsilon) + 1/\varepsilon^4)$.
+
+- **Karp, Luby, and Madras (1989).** "Monte-Carlo approximation algorithms for enumeration problems." *Journal of Algorithms*. The FPRAS for DNF counting presented in this lecture.
+
+- **Goemans and Williamson (1995).** "Improved approximation algorithms for maximum cut and satisfiability problems using semidefinite programming." *Journal of the ACM*. The 0.878-approximation for Max-Cut that launched the SDP approximation era.
+
+- **Boyd and Vandenberghe (2004).** *Convex Optimization.* Cambridge University Press. The standard reference for SDP and its algorithms (interior-point methods). <!-- TODO: verify exact title -->
+
+- **Khot, Kindler, Mossel, and O'Donnell (2007).** "Optimal inapproximability results for MAX-CUT and other 2-variable CSPs?" *SIAM Journal on Computing*. Shows that $\alpha_{\text{GW}}$ is optimal under the Unique Games Conjecture.
+
+
+## Try it yourself {#sec-exercises}
+
+1. **FPTAS by hand.** Consider knapsack with $W = 10$, items: $(v=6, w=2)$, $(v=10, w=4)$, $(v=12, w=6)$, $(v=4, w=3)$. Apply the FPTAS with $\varepsilon = 0.5$. Compute the rounded values $v'_i$, solve the DP on rounded values, and verify the result is within $(1-\varepsilon) \cdot \text{OPT}$.
+
+2. **DNF counting.** Consider the DNF $\phi = (x_1 \land x_2) \lor (x_2 \land x_3) \lor (x_1 \land x_3)$ over 3 variables. Enumerate all $2^3 = 8$ assignments to find the exact count. Then compute $|B'|$ and $p'$ for the KLM algorithm. Verify that $p' \ge 1/m$.
+
+3. **Max-Cut lower bound.** For the cycle graph $C_5$ (5-vertex cycle), find the maximum cut by brute force. Then write the SDP relaxation and argue that the SDP optimum is at least as large. What vectors would the SDP choose?
+
+4. **SDP as LP.** Write out the SDP for Max-Cut on the triangle $K_3$ explicitly as a $3 \times 3$ matrix optimization problem. What are the constraints? Solve it by symmetry.
+
+5. **Implement GW rounding.** Given vectors $v_1 = (1, 0)$, $v_2 = (-\cos 60°, \sin 60°)$, $v_3 = (-\cos 60°, -\sin 60°)$ on the unit circle, and edges forming $K_3$: write code to perform 10,000 random hyperplane roundings (in 2D) and estimate the expected cut size. Compare with $\alpha_{\text{GW}} \cdot \text{SDP-OPT}$.

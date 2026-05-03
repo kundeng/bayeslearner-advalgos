@@ -1,0 +1,626 @@
+---
+title: "Cuckoo Hashing Analysis and the Power of Two Choices"
+subtitle: "COMPSCI 224 Lecture 5 — Fall 2014"
+author: "Companion notes by Kun Deng"
+date: today
+abstract: |
+  We complete the expected-constant-time insertion proof for cuckoo hashing
+  by bounding path, single-cycle, and double-cycle configurations in the
+  cuckoo graph. Then we turn to load balancing: by hashing each item to two
+  random bins and placing it in the lighter one, the maximum load drops from
+  $\Theta(\log n / \log\log n)$ to $\ln\ln n / \ln 2 + \Theta(1)$ — an
+  exponential improvement from a single extra choice.
+engine: knitr
+---
+
+## Why this lecture matters
+
+The cuckoo hashing analysis demonstrates a clean union-bound technique that recurs
+throughout randomized algorithms: enumerate all "bad" configurations, bound each
+one's probability, then show the sum is negligible. The power of two choices is one
+of the most surprising results in load balancing — it says that a *single* extra
+random probe, costing almost nothing at insertion time, buys you an exponential
+drop in the worst-case load.
+
+::: {.callout-tip title="30-second story"}
+1. Cuckoo hashing inserts in expected $O(1)$ time because long paths,
+   single-cycle tours, and double-cycle tours in the cuckoo graph each have
+   geometrically decaying probability.
+2. If a double cycle occurs, we rebuild the entire table; this happens with
+   probability $O(1/n^2)$, so the amortized rebuild cost is negligible.
+3. With one random hash function, the heaviest bin among $n$ balls in $n$ bins
+   is $\Theta(\log n / \log\log n)$.
+4. With *two* random hash functions and a "least-loaded" tie-break, the
+   heaviest bin drops to $\ln\ln n / \ln 2 + \Theta(1)$.
+5. Going from 2 to $d$ choices only changes the base of the iterated
+   logarithm — the big win is from 1 to 2.
+6. A layered induction with Chernoff bounds makes the intuition rigorous.
+:::
+
+## Cuckoo hashing: finishing the insertion analysis {#sec-cuckoo-analysis}
+
+Recall from the previous lecture: we have a table $A$ of size $m = 4n$ and two
+fully random hash functions $g, h : U \to [m]$. When we insert item $x$, we
+place it at $g(x)$; if that cell is occupied, we evict the current resident to
+its *other* hash location, and so on. If the chain of evictions exceeds
+$C\log n$ steps (for a constant $C$ chosen later), we pick fresh $g, h$ and
+rebuild the table from scratch.
+
+**The rebuild strategy.** When rebuilding, we allocate a fresh array, choose new
+hash functions, and reinsert every item. If *any* insertion during rebuilding
+again exceeds $C\log n$ steps, we discard everything and start over. The key
+observation: each rebuild attempt succeeds with constant probability, so the
+expected number of attempts is $O(1)$.
+
+### The cuckoo graph {#sec-cuckoo-graph}
+
+The **cuckoo graph** $G = (V, E)$ has:
+
+- $|V| = m$ vertices, one per cell of the array $A$.
+- $|E| = n$ edges, one per stored item. Item $x$ contributes edge $(g(x), h(x))$.
+
+This graph may have multi-edges (two items with the same pair of hash values)
+and self-loops ($g(x) = h(x)$ for some $x$). The structure of this graph
+completely determines the behavior of the insertion algorithm.
+
+<!-- TikZ: A small cuckoo graph with m=8 vertices arranged in a line, and
+     n=5 edges connecting various pairs. Label edges with item names x1..x5.
+     Show one vertex with two incident edges to illustrate a potential collision. -->
+
+### Three insertion scenarios {#sec-three-cases}
+
+When we insert $x$, the eviction chain traces a walk in the cuckoo graph
+starting at $g(x)$. Three structural cases arise depending on the topology
+of the connected component we enter:
+
+**Case 1: Simple path.** The chain of evictions follows a path $g(x) \to v_1 \to v_2 \to \cdots \to v_k$, where $v_k$ is an empty cell. Each displaced item moves
+to its alternate location, and the last one finds a free spot. The insertion
+takes $k$ steps and succeeds.
+
+<!-- TikZ: A horizontal path of vertices with directed arrows showing the
+     eviction chain. The first vertex is labeled g(x), items x2, x3, x4
+     label the edges, and the final vertex is empty (drawn as a dashed circle). -->
+
+**Case 2: Single cycle.** The path hits a cycle. When we traverse the cycle
+once, every item in the cycle shifts one position. The element $x$ then tries
+its alternate location $h(x)$, which may lead to another path that terminates
+at an empty cell. This resolves without rebuilding — a single cycle is not fatal.
+
+<!-- TikZ: An eviction path entering a cycle of 4 vertices, traversing it
+     once (items shift), then x exits via h(x) to a short path ending at an
+     empty cell. Annotate the cycle with directional arrows. -->
+
+**Case 3: Double cycle.** The path encounters two distinct cycles. After
+traversing the first cycle, the chain enters a second cycle, creating an
+infinite loop. This is the only fatal configuration — it triggers the $C\log n$
+cutoff and forces a rebuild.
+
+<!-- TikZ: An eviction path hitting cycle 1, resolving it, then entering
+     cycle 2 which loops back. Show the infinite-loop arrows with a red
+     "REBUILD" annotation at the C log n cutoff point. -->
+
+### Setting up the analysis {#sec-setup-analysis}
+
+Define indicator random variables for inserting a particular item $x$:
+
+- $P_k$: the insertion produces a path of length $\ge k$,
+- $C_k$: the insertion produces a single-cycle tour of length $\ge k$,
+- $D$: the insertion encounters a double-cycle configuration.
+
+Let $T$ denote the insertion time. We can decompose the expected cost:
+
+$$
+\mathbb{E}[T] = \sum_k \mathbb{E}[P_k] + \sum_k \mathbb{E}[C_k]
+  + \Pr[D] \cdot n\,\mathbb{E}[T]
+  + \Pr[\text{chain} > C\log n] \cdot n\,\mathbb{E}[T].
+$$ {#eq-insert-time}
+
+The first two sums account for the normal insertion work. The last two terms
+account for rebuilds: a double cycle always triggers a rebuild (costing $n\,\mathbb{E}[T]$
+to reinsert everything), and exceeding $C\log n$ steps (from a very long path or
+cycle) also triggers one.
+
+The strategy: show $\Pr[D]$ and $\Pr[\text{chain} > C\log n]$ are
+$O(1/n^2)$, so after multiplying by $n$ the rebuild contribution is $O(1/n) \cdot \mathbb{E}[T]$. Moving this to the left side and solving gives
+$\mathbb{E}[T] = O(1)$ provided the two sums are constants.
+
+### Bounding path probabilities {#sec-path-bound}
+
+Fix a particular path configuration: choose $k$ specific items $x_2, \ldots, x_{k+1}$
+and $k+1$ specific vertices $v_0, v_1, \ldots, v_k$ forming the path. The
+probability that $g$ and $h$ produce exactly this assignment has three components:
+
+1. **The starting vertex:** $\Pr[g(x) = v_0] = 1/m$.
+2. **Each edge:** Item $x_i$ connects consecutive vertices. Either $g(x_i) = v_{i-1}$
+   and $h(x_i) = v_i$, or vice versa. Each specific assignment has probability
+   $1/m^2$, and there are 2 valid orientations.
+3. **All $k$ interior items are independent**, giving $(2/m^2)^k$.
+
+Combining:
+
+$$
+\Pr[\text{this specific path}] = \frac{1}{m} \cdot \left(\frac{2}{m^2}\right)^k
+  = \frac{2^k}{m^{2k+1}}.
+$$ {#eq-path-prob}
+
+::: {.callout-tip title="Where does $2^k$ come from?"}
+Each interior item $x_i$ connects two vertices via one of its hash values.
+Either $g(x_i)$ points left and $h(x_i)$ points right, or vice versa — two
+choices per item, hence $2^k$ total labelings. This is a symmetry factor, not
+a probability — the $1/m^{2k}$ already accounts for the hash values landing
+in specific positions.
+:::
+
+Now union-bound over all configurations:
+
+- At most $m^{k+1}$ choices for the $k+1$ vertices (with replacement, since
+  vertices could theoretically repeat, though in a path they don't).
+- At most $n(n-1)\cdots(n-k+1) \le n^k$ choices for the $k$ items.
+
+Therefore:
+
+$$
+\mathbb{E}[P_k] \le n^k \cdot m^{k+1} \cdot \frac{2^k}{m^{2k+1}}
+  = \frac{(2n)^k}{m^k} = \left(\frac{2n}{m}\right)^k.
+$$ {#eq-pk-bound}
+
+With $m = 4n$, this becomes $(1/2)^k$. The geometric series sums to:
+
+$$
+\sum_{k=1}^{\infty} \mathbb{E}[P_k] \le \sum_{k=1}^{\infty} \frac{1}{2^k} = 1.
+$$
+
+::: {.callout-important title="Why $m = 4n$?"}
+The table must be at least twice the number of items ($m > 2n$) for the
+geometric ratio $2n/m$ to be strictly less than 1. The choice $m = 4n$ gives
+ratio $1/2$, ensuring rapid convergence. Smaller constants (e.g., $m = 2.01n$)
+work but give a larger expected insertion time.
+:::
+
+### Bounding single-cycle configurations {#sec-single-cycle}
+
+A single-cycle tour of length $k$ (counting edges) has three structural
+"segments": a path leading into the cycle, the cycle itself, and a path exiting
+after resolution. By the pigeonhole principle, at least one of these three
+segments contains $\ge k/3$ edges.
+
+Apply the path-probability analysis to just that longest segment. The same
+geometric decay applies, giving:
+
+$$
+\mathbb{E}[C_k] \le \frac{3}{2^{k/3}},
+$$
+
+where the factor of 3 comes from the union bound over which of the three
+segments is longest. This again sums to a constant:
+
+$$
+\sum_{k=1}^{\infty} \mathbb{E}[C_k] \le 3\sum_{k=1}^{\infty} \frac{1}{2^{k/3}} = \frac{3}{2^{1/3} - 1} \approx 11.6.
+$$
+
+### Bounding double-cycle probability {#sec-double-cycle}
+
+A double-cycle tour of length $k$ (counting edges) involves $k-2$ distinct
+vertices and $k$ items. The structure is more complex: we must choose where the
+first cycle starts among the $k$ steps, how long it is, and where the second
+cycle starts. This gives at most $k^3$ structural choices.
+
+Fixing a specific configuration, the probability of seeing exactly those hash
+evaluations is:
+
+$$
+\Pr[\text{specific double-cycle of length } k] = \frac{2^k}{m^{2k+2}}.
+$$
+
+The extra factor of $m^2$ in the denominator (compared to a path) comes from
+the fact that $x$ itself needs both $g(x)$ and $h(x)$ to land in specific
+positions (to enter the first and second cycles respectively).
+
+Union-bounding:
+
+- $m^{k-2}$ vertex choices,
+- $n^k$ item choices,
+- $k^3$ structural choices.
+
+With $m = 4n$:
+
+$$
+\Pr[D_k = 1] \le m^{k-2} \cdot n^k \cdot k^3 \cdot \frac{2^k}{m^{2k+2}}
+  = \frac{k^3}{2^k} \cdot \frac{1}{n^2}
+  \quad \text{(up to off-by-one corrections)}.
+$$ {#eq-dk-bound}
+
+Summing over $k$: $\sum_{k=1}^{\infty} k^3 / 2^k = 26$ (a convergent series),
+so $\Pr[D] = O(1/n^2)$.
+
+::: {.callout-warning title="Off-by-one traps"}
+The exact vertex count in a double-cycle tour is $k-1$ or $k-2$ depending
+on whether you count endpoints shared between segments. The lecturer noted
+this ambiguity live and deferred the fix to scribe notes. The analysis is
+robust: even if the exponent on $n$ shifts by 1, we still get $\Pr[D] = O(1/\text{poly}(n))$ with the polynomial large enough to absorb the
+multiplication by $n$ in the rebuild cost.
+:::
+
+### Wrapping up: choosing $C$ {#sec-choose-c}
+
+For the chain to exceed $C\log n$ steps without a double cycle, it must
+contain a path or single-cycle configuration of that length. By @eq-pk-bound:
+
+$$
+\Pr[P_{C\log n}] \le \frac{1}{2^{C\log n}} = \frac{1}{n^{C\log 2}} = \frac{1}{n^{0.69C}}.
+$$
+
+Picking $C \ge 3/\log 2 \approx 4.33$ (say $C = 5$) makes this $O(1/n^3)$.
+After multiplication by $n$ (the rebuild cost), the contribution is $O(1/n^2)$.
+
+Combining all terms in @eq-insert-time and solving the resulting linear equation
+in $\mathbb{E}[T]$:
+
+$$
+\mathbb{E}[T] = \frac{O(1)}{1 - O(1/n)} = O(1).
+$$
+
+The expected insertion time for cuckoo hashing is constant.
+
+## The power of two choices {#sec-two-choices}
+
+### Setup: balls into bins {#sec-balls-bins}
+
+Consider the classical balls-into-bins model: throw $n$ balls independently and
+uniformly at random into $n$ bins. This models hashing with chaining when the
+hash function is perfectly random and the table size equals the number of items.
+
+With a single random hash function, the maximum load (length of the longest
+chain) is:
+
+$$
+\Theta\!\left(\frac{\log n}{\log\log n}\right)
+$$
+
+with high probability. This is a classical result — the upper bound follows
+from a union bound over bins and a Stirling-type estimate of collision
+probabilities.
+
+::: {.callout-note title="Aside (mine, not the lecturer's)"}
+The exact threshold is $(1+o(1))\log n / \log\log n$. The tightest analysis
+gives the leading constant as $1$ — see Raab and Steger, "Balls into Bins — A
+Simple and Tight Analysis" (1998). The lower bound uses a second-moment argument
+on the number of bins with $\ge k$ balls.
+:::
+
+### The algorithm {#sec-two-choices-algo}
+
+Due to Azar, Broder, Karlin, and Upfal (STOC '94, journal version SICOMP '99):
+
+> Pick two independent random hash functions $g, h : U \to [n]$. When
+> inserting item $x$, compare the current loads of bins $g(x)$ and $h(x)$,
+> and place $x$ in the *least loaded* one. Break ties arbitrarily.
+
+Queries must check both $g(x)$ and $h(x)$, so the query time is at most twice
+the maximum load. The remarkable result:
+
+**Theorem.** With high probability, the maximum load is:
+
+$$
+\frac{\ln\ln n}{\ln 2} + \Theta(1).
+$$ {#eq-two-choices-load}
+
+This is an *exponential* improvement: $\log\log n$ vs. $\log n / \log\log n$.
+The ratio between the two grows like $(\log n)^{1-o(1)}$.
+
+### Intuition via the layered argument {#sec-layered-intuition}
+
+Define $B(i)$ = number of bins with load at least $i$. Let the **height** of
+item $x$ be its position within its bin: $H(x) = i$ means $x$ is the $i$-th
+item placed in that bin.
+
+For $H(x) \ge i+1$ to happen, *both* bins $g(x)$ and $h(x)$ must have had
+load $\ge i$ at the time $x$ was inserted. Since $g$ and $h$ are independent:
+
+$$
+\Pr[H(x) \ge i+1] \le \Pr[\text{load}(g(x)) \ge i] \cdot \Pr[\text{load}(h(x)) \ge i]
+  \le \left(\frac{B(i)}{n}\right)^2.
+$$ {#eq-height-prob}
+
+::: {.callout-warning title="Non-rigorous step"}
+The inequality $\Pr[\text{load}(g(x)) \ge i] \le B(i)/n$ treats $B(i)$ as
+fixed. In reality, $B(i)$ is a random variable correlated with the hash
+values. The rigorous proof (below) handles this via conditional thresholds.
+:::
+
+Summing over all $n$ items and pretending $B(i)$ is deterministic:
+
+$$
+B(i+1) \le n \cdot \left(\frac{B(i)}{n}\right)^2 = \frac{B(i)^2}{n}.
+$$ {#eq-recurrence}
+
+Writing $\beta_i = B(i)/n$ (the fraction of bins at level $\ge i$):
+
+$$
+\beta_{i+1} \le \beta_i^2.
+$$
+
+Once $\beta_i < 1/2$, iterated squaring drives it to zero extremely fast:
+
+| Step $j$ | $\beta_{i_0 + j}$ |
+|:---------:|:-----------------:|
+| 0 | $1/2$ |
+| 1 | $1/4$ |
+| 2 | $1/16$ |
+| 3 | $1/256$ |
+| 4 | $1/65536$ |
+
+After $j$ steps: $\beta_{i_0+j} \le 1/2^{2^j}$. We need $\beta_{i_0+j} < 1/n$ (meaning no bins at that level):
+
+$$
+2^{2^j} > n \implies j > \log_2\log_2 n.
+$$
+
+Since $B(6)/n \le 1/6 < 1/2$ trivially (at most $n/6$ bins can have 6+ items
+when there are only $n$ items total), the maximum load is at most $6 + \lceil\log_2\log_2 n\rceil + O(1)$.
+
+::: {.callout-important title="Key insight"}
+The "squaring" recurrence $f(i+1) \le f(i)^2$ converges to zero in
+$O(\log\log(1/f(i_0)))$ steps once $f(i_0) < 1$. This is why a single
+extra choice buys an exponential improvement: it turns a linear recurrence
+(where $B(i+1) \approx B(i)/e$ or similar) into a squaring one. The extra
+choice introduces a *product* of two independent probabilities, which
+translates to squaring.
+:::
+
+### Making it rigorous {#sec-rigorous}
+
+The non-rigorous argument treated $B(i)$ as deterministic. To fix this, we use
+a layered induction:
+
+1. **Define thresholds.** Set $\alpha_6 = n/(2e)$ and the recurrence:
+   $$
+   \alpha_{i+1} = \frac{e\,\alpha_i^2}{n}.
+   $$
+   The factor $e$ provides slack above the "expected" value $\alpha_i^2/n$.
+
+2. **Define good events.** Let $E_i$ be the event $\{B(i) \le \alpha_i\}$.
+   Observe $\Pr[E_6] = 1$ since $\alpha_6 = n/(2e) > n/6$.
+
+3. **Conditional concentration (Claim 1).** Given that $E_i$ holds:
+   $$
+   \Pr[\overline{E_{i+1}} \mid E_i] \le O(1) \cdot \Pr\!\left[\text{Bin}\!\left(n,\, \frac{\alpha_i^2}{n^2}\right) > \alpha_{i+1}\right].
+   $$
+   The right side is bounded by a Chernoff bound — the mean of the binomial is
+   $\alpha_i^2/n = \alpha_{i+1}/e$, and we're asking for a deviation by factor $e$.
+
+4. **Chernoff gives exponential decay.** The Chernoff bound yields
+   $\Pr[\overline{E_{i+1}} \mid E_i] \le \exp(-\Omega(\alpha_{i+1}))$, which
+   decreases doubly-exponentially as $i$ grows.
+
+5. **Union bound over levels.** Since there are only $O(\log\log n)$ levels and
+   each failure probability is doubly-exponentially small, the union bound over
+   all levels gives a high-probability guarantee.
+
+::: {.callout-note title="Dependency subtlety"}
+Conditioning on $E_i$ introduces correlations: knowing that few bins are heavy
+constrains which hash assignments are possible. The fix (omitted in lecture)
+uses a stochastic dominance argument: even conditioned on $E_i$, each item's
+height-$(i+1)$ indicator is dominated by an independent Bernoulli with
+parameter $(\alpha_i/n)^2$. This lets us apply Chernoff to the sum as if the
+indicators were independent.
+:::
+
+### Power of $d$ choices {#sec-d-choices}
+
+What if you hash into $d$ random locations and place in the least loaded? The
+maximum load becomes:
+
+$$
+\frac{\ln\ln n}{\ln d} + \Theta(1).
+$$
+
+The recurrence generalizes to $\beta_{i+1} \le \beta_i^d$, which converges in
+$\log_d\log n$ steps — merely changing the base of the outer logarithm from 2
+to $d$. The dramatic improvement comes in the first step (1 to 2 choices); after
+that, diminishing returns set in.
+
+| Choices $d$ | Max load (approx., $n = 10^6$) |
+|:-----------:|:------------------------------:|
+| 1 | $\approx 5.3$ (i.e., $\log n / \log\log n$) |
+| 2 | $\approx 4.3$ (i.e., $\ln\ln n / \ln 2$) |
+| 3 | $\approx 3.7$ |
+| 10 | $\approx 2.6$ |
+
+::: {.callout-note title="Aside (mine, not the lecturer's)"}
+Vocking (STOC 2003) showed that by partitioning bins into $d$ equal groups,
+probing one random bin per group, and breaking ties by choosing the *leftmost*
+group, the maximum load improves to $\ln\ln n / (d \ln \phi_d) + O(1)$ where
+$\phi_d$ is a constant growing with $d$. This effectively replaces $\ln d$
+with $d$ in the denominator — an exponential-in-$d$ improvement. The
+asymmetric tie-breaking rule is essential; symmetric tie-breaking cannot
+achieve this.
+:::
+
+## Preview: Fibonacci heaps {#sec-fib-heap-preview}
+
+The lecture closed with a preview of the next topic. A priority queue (heap)
+stores $n$ items with comparable keys and supports insert, delete-min, and
+decrease-key. The running time of Dijkstra's shortest-path algorithm depends
+directly on these costs:
+
+$$
+T_{\text{Dijkstra}} = O(n \cdot T_{\text{ins}} + n \cdot T_{\text{del-min}} + m \cdot T_{\text{dec-key}}).
+$$
+
+| Operation | Binary heap | Fibonacci heap |
+|-----------|:-----------:|:--------------:|
+| Insert | $O(\log n)$ | $O(1)$ amortized |
+| Decrease-key | $O(\log n)$ | $O(1)$ amortized |
+| Delete-min | $O(\log n)$ | $O(\log n)$ amortized |
+
+With a binary heap, Dijkstra runs in $O(m\log n)$. With a Fibonacci heap, it
+runs in $O(m + n\log n)$ — a significant improvement for dense graphs where
+$m \gg n$.
+
+## Cheat sheet
+
+::: {.callout-important title="Cheat sheet — Lecture 5"}
+
+**Cuckoo hashing insertion analysis**
+
+- Table size $m = 4n$; two fully random hash functions $g, h$.
+- Cuckoo graph: $m$ vertices, $n$ edges ($x \mapsto \{g(x), h(x)\}$).
+- $\Pr[\text{path of length} \ge k] \le (1/2)^k$ — geometric decay.
+- Single-cycle tour: $\mathbb{E}[C_k] \le 3/2^{k/3}$ — also geometric.
+- $\Pr[\text{double cycle}] = O(1/n^2)$ — rebuild cost is amortized $O(1/n)$.
+- Cutoff at $C\log n$ steps; choose $C \ge 5$ for $O(1/n^2)$ rebuild probability.
+- **Expected insertion time: $O(1)$.**
+
+**Power of two choices**
+
+- 1 choice: max load $= \Theta(\log n / \log\log n)$.
+- 2 choices (least loaded): max load $= \ln\ln n / \ln 2 + \Theta(1)$.
+- $d$ choices: max load $= \ln\ln n / \ln d + \Theta(1)$.
+- Key recurrence: $B(i+1)/n \le (B(i)/n)^2$ — iterated squaring.
+- Rigorous proof: layer-by-layer induction + Chernoff bounds + stochastic dominance.
+- Reference: Azar, Broder, Karlin, Upfal (SICOMP '99).
+
+**Fibonacci heaps (preview)**
+
+- Insert and decrease-key in $O(1)$ amortized; delete-min in $O(\log n)$ amortized.
+- Dijkstra: $O(m + n\log n)$ instead of $O(m\log n)$.
+:::
+
+## FAQ — questions students actually asked {#sec-faq}
+
+**Q: When you say "fix the assignment of $k+1$ hash values to vertices," what
+exactly are you fixing?**
+
+A: You're choosing which $k+1$ cells of the table (vertices of the cuckoo graph)
+are involved in the path, *and* which $k$ stored items form the edges. The
+probability calculation conditions on a specific assignment of hash function
+outputs to those vertices. Think of it as: "suppose this exact picture appears
+in the cuckoo graph — what's the probability?" Then sum over all possible
+pictures.
+
+**Q: Where does the $2^k$ factor come from in the path probability?**
+
+A: Each interior item $x_i$ sits at the meeting point of two consecutive edges.
+It could be there because $g(x_i)$ maps to the left vertex and $h(x_i)$ to the
+right, or vice versa. Two orientations per item, $k$ items gives $2^k$ valid
+orientations for the same vertex sequence. The factor is multiplicative because
+each item's hash functions are independent.
+
+**Q: For the double-cycle probability, you wrote $\Pr[D=1] \le \sum_k \Pr[D_k=1]$
+with a union bound. Shouldn't each $D_k$ be a *subset* of $D$, making the
+inequality go the other way?**
+
+A: The events $\{D_k = 1\}$ are actually *disjoint* — $D_k$ is the event that
+the $k$-th step is *exactly* where the second cycle closes. You can't close the
+second cycle at both step 7 and step 9. So the inequality is in fact equality:
+$\Pr[D=1] = \sum_k \Pr[D_k=1]$. The "union bound" here is exact.
+
+**Q: For power of $d$ choices, why doesn't going from 2 to 3 choices help as
+much as going from 1 to 2?**
+
+A: The qualitative jump happens between $d=1$ and $d=2$ because going from
+$\beta_{i+1} \le \beta_i \cdot (\text{something})$ to $\beta_{i+1} \le \beta_i^2$
+changes the convergence from polynomial-in-$i$ to doubly-exponential-in-$i$.
+Going from $\beta_i^2$ to $\beta_i^3$ is merely a constant-factor speedup in
+the same doubly-exponential regime. Concretely: $\ln\ln n / \ln 2 \approx 4.3$
+vs. $\ln\ln n / \ln 3 \approx 3.7$ for $n = 10^6$.
+
+**Q: Is the layered argument for two choices fully rigorous as stated?**
+
+A: No. Treating $B(i)$ as deterministic ignores correlations: conditioning on
+$E_i$ (that $B(i)$ is small) affects which hash assignments are possible, introducing dependencies between different items' height indicators. The rigorous
+version handles this via stochastic dominance (showing the conditional
+distribution is dominated by independent Bernoullis) before applying Chernoff.
+
+**Q: Could you just use $d$ totally random locations instead of two hash
+functions?**
+
+A: Yes — $d$ independent hash functions and "place in least loaded" gives the
+$\ln\ln n / \ln d$ bound. But there's a subtlety: you need the $d$ hash
+functions to be mutually independent. Two-wise independence between pairs is not
+sufficient for the analysis.
+
+## Further reading {#sec-further-reading}
+
+- **Pagh and Rodler (2004).** "Cuckoo Hashing." *Journal of Algorithms* 51(2):122–144.
+  The original cuckoo hashing paper with the $O(1)$ worst-case lookup guarantee.
+
+- **Azar, Broder, Karlin, and Upfal (1999).** "Balanced Allocations." *SIAM Journal
+  on Computing* 29(1):180–200. The foundational power-of-two-choices result.
+
+- **Mitzenmacher, Richa, and Sitaraman (2001).** "The Power of Two Random Choices:
+  A Survey of Techniques and Results." Comprehensive survey covering
+  extensions to weighted jobs, non-uniform distributions, and queueing.
+
+- **Vocking (2003).** "How Asymmetry Helps Load Balancing." *Journal of the ACM*
+  50(4):568–589. The grouped-bins variant with tie-breaking by position.
+
+- **Devroye and Morin (2003).** "Cuckoo Hashing: Further Analysis." *Information
+  Processing Letters* 86(4):215–219. Tighter analysis of insertion time and
+  the effect of the load factor $n/m$.
+
+## Try it yourself {#sec-exercises}
+
+1. **Path probability generalization (warm-up).** Verify that for $m = cn$ with $c > 2$,
+   $\mathbb{E}[P_k] \le (2/c)^k$, and compute the expected total path contribution
+   $\sum_k \mathbb{E}[P_k]$ as a function of $c$. For what value of $c$ does this
+   sum first drop below $0.1$?
+
+2. **Power of $d$ choices simulation.** Write a Python program that, for
+   $n = 10^5$ and $d \in \{1, 2, 3, 5, 10\}$, simulates the load-balancing
+   process and plots the maximum load vs. $d$. Overlay the theoretical bound
+   $\ln\ln n / \ln d$. Run 50 trials per $d$ and show error bars.
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+
+def max_load(n, d, trials=50):
+    """Simulate d-choice load balancing and return average max load."""
+    results = []
+    for _ in range(trials):
+        bins = np.zeros(n, dtype=int)
+        for _ in range(n):
+            choices = np.random.randint(0, n, size=d)
+            best = choices[np.argmin(bins[choices])]
+            bins[best] += 1
+        results.append(bins.max())
+    return np.mean(results), np.std(results)
+
+n = 100_000
+ds = [1, 2, 3, 5, 10]
+means, stds = zip(*[max_load(n, d) for d in ds])
+
+plt.figure(figsize=(7, 4))
+plt.errorbar(ds, means, yerr=stds, fmt='o-', capsize=4, label='Simulated')
+theoretical = [np.log(n) / np.log(np.log(n))]
+theoretical += [np.log(np.log(n)) / np.log(d) + 1 for d in ds[1:]]
+plt.plot(ds, theoretical, 's--', label='Theoretical bound')
+plt.xlabel('Number of choices $d$')
+plt.ylabel('Maximum load')
+plt.legend()
+plt.title(f'Power of $d$ choices ($n = {n:,}$)')
+plt.tight_layout()
+plt.savefig('power_of_d_choices.png', dpi=150)
+plt.show()
+```
+
+3. **Cuckoo graph cycles.** Prove that if the cuckoo graph on $m = (2+\varepsilon)n$
+   vertices is acyclic, then all insertions succeed without any eviction chain
+   exceeding the diameter of the component. (*Hint:* in a forest, each connected
+   component is a tree, and the eviction chain from any vertex traverses at most
+   the tree's depth.)
+
+4. **Static optimality of two choices.** Show that no *oblivious* scheme (one
+   that doesn't inspect bin loads) can achieve maximum load $o(\log n / \log\log n)$
+   with $n$ balls and $n$ bins, even with $d$ hash functions. This proves that
+   the load *inspection* is essential, not just the extra randomness. (*Hint:*
+   consider the first $n/d$ balls — each sees $d$ random bins with no load
+   information.)
+
+5. **Breaking the symmetry (Vocking).** Implement the grouped-bins variant:
+   partition $n$ bins into $d$ equal groups, probe one random bin per group,
+   place in the least loaded, break ties by choosing the *leftmost* group.
+   Compare the maximum load against the standard $d$-choice scheme for
+   $n = 10^5$ and $d = 4$ over 100 trials. How large is the improvement?

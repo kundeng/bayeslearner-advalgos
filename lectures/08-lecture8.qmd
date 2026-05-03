@@ -1,0 +1,414 @@
+---
+title: "Online Algorithms and Paging"
+subtitle: "COMPSCI 224 Lecture 8 — Fall 2014"
+author: "Companion notes by Kun Deng"
+date: today
+abstract: |
+  Online algorithms make irrevocable decisions without knowing future
+  inputs. Competitive analysis — introduced by Sleator and Tarjan in the
+  same year as splay trees — measures an online algorithm's cost against
+  an omniscient adversary. This lecture develops the framework through
+  two toy problems (ski rental, doubling search), then applies it to
+  the list update problem (where move-to-front is dynamically optimal)
+  and paging (where LRU is k-competitive and no deterministic algorithm
+  can do better). Randomization against an oblivious adversary breaks
+  the deterministic barrier, bringing the competitive ratio down to
+  O(log k).
+---
+
+## Why this lecture matters {#sec-why}
+
+Every caching layer, every memory hierarchy, and every load balancer faces the same dilemma: what to keep and what to discard when you don't know what's coming next. Competitive analysis gives you a way to reason about this rigorously — and the results are sharp enough to explain *why* LRU is the default eviction policy in practice and *when* you should expect it to fail.
+
+::: {.callout-tip title="The 30-second story"}
+1. An online algorithm is $r$-competitive if its cost on *any* input is at most $r$ times the cost of the best offline algorithm (plus an additive constant).
+2. Ski rental (buy vs. rent) is 2-competitive; doubling search (find the pizza) is 9-competitive.
+3. For the list update problem, move-to-front is 2-competitive against *any* algorithm — it is dynamically optimal.
+4. For paging with cache size $k$, LRU and FIFO are $k$-competitive — and no deterministic algorithm can beat $k$.
+5. Randomization helps: the marking algorithm is $2H_k \approx 2\ln k$ competitive against oblivious adversaries, and this is tight up to constants.
+:::
+
+
+## Online algorithms and competitive analysis {#sec-competitive}
+
+An **online algorithm** receives a sequence of requests $\sigma = \sigma_1, \sigma_2, \ldots, \sigma_m$ one at a time. Upon receiving $\sigma_i$, it must make an irrevocable decision before seeing $\sigma_{i+1}$.
+
+Let $\text{OPT}$ denote an algorithm that knows the entire sequence $\sigma$ in advance and makes the best possible decisions.
+
+::: {.callout-important title="Definition: competitive ratio"}
+An online algorithm $A$ is **$r$-competitive** if for all request sequences $\sigma$:
+
+$$
+\text{cost}(A, \sigma) \le r \cdot \text{cost}(\text{OPT}, \sigma) + c
+$$ {#eq-competitive}
+
+for some constant $c$ independent of $\sigma$.
+:::
+
+This framework was introduced by Sleator and Tarjan (1985) — the same year as splay trees, in a different paper.
+
+
+## Toy example 1: ski rental {#sec-ski-rental}
+
+You're at a ski resort. Each day your friends decide whether to stay another day or go home. You must have skis: renting costs \$1/day; buying costs \$B.
+
+**OPT** knows the number of days $m$. If $m > B$, buy on day 1 (cost $B$). If $m \le B$, rent every day (cost $m$).
+
+**Online strategy.** Rent for the first $B$ days. If there is a $(B+1)$-st day, buy.
+
+**Analysis.**
+
+- If $m \le B$: you pay $m$, OPT pays $m$. Ratio = 1.
+- If $m > B$: you pay $B$ (rent) + $B$ (buy) = $2B$. OPT pays $B$. Ratio = 2.
+
+::: {.callout-tip}
+The ski rental problem distils the **rent-or-buy** dilemma that appears in many systems: should you cache this result, compile this query plan, or provision this server?
+:::
+
+
+## Toy example 2: doubling search {#sec-doubling-search}
+
+A hallway has rooms numbered $-n/2$ to $n/2$. You stand at room 0. One room has free pizza, but you don't know which. Walking one room costs 1 unit of time. OPT walks straight to the target (cost $= |t|$ for target room $t$).
+
+**Strategy.** Zigzag with exponentially increasing reach: visit rooms $1, -2, 4, -8, 16, \ldots$
+
+Suppose the pizza is in room $t > 0$. Let $2^m$ be the first power of 2 that is at least $t$, so $2^m \le 2t$. The total distance walked is at most:
+
+$$
+t + 2(1 + 2 + 4 + \cdots + 2^m) \le t + 4 \cdot 2^m \le t + 8t = 9t
+$$ {#eq-doubling-cost}
+
+So the algorithm is **9-competitive**.
+
+<!-- TikZ: Number line from -n/2 to n/2 with room 0 marked. Arrows showing the zigzag path: 0→1→0→-2→0→4→0→-8→... Pizza icon at room t. Label each segment with its length. -->
+
+::: {.callout-note title="Aside (mine, not the lecturer's)"}
+This is an instance of the **linear search problem** (also called the cow-path problem). The competitive ratio can be improved to $9$ with base-2 doubling. Using a different base $b$, the ratio is $(b+1)^2/(b-1)$, minimized at $b = (\sqrt{5}+1)/2 \approx 1.618$ (the golden ratio), giving a ratio of about $4 + 2\sqrt{5} \approx 8.47$.
+:::
+
+
+## The list update problem {#sec-list-update}
+
+There are $n$ items in a linked list. Three operations:
+
+- **Access($x$):** traverse the list from the front to find $x$. Cost = position of $x$ in the list.
+- **Insert($x$):** append $x$ to the end.
+- **Delete($x$):** remove $x$ after accessing it.
+
+After accessing an item, you may move it *anywhere closer to the front* for free. These are called **free exchanges**. You may also swap any item with its predecessor at cost 1 (**paid exchange**).
+
+### Heuristics {#sec-heuristics}
+
+Three classical approaches:
+
+| Heuristic | Rule |
+|-----------|------|
+| **Move-to-front (MF)** | Always move the accessed item to the front |
+| **Transpose** | Swap the accessed item with its immediate predecessor |
+| **Frequency count** | Keep items sorted by access frequency (most frequent first) |
+
+Bentley and McGeoch (1985) proved that MF costs at most twice what frequency count costs (under mild initial conditions) and found experimentally that transpose performed poorly.
+
+::: {.callout-warning}
+Move-to-front's aggressive reordering looks wasteful, but it is the dynamically optimal strategy. Transpose — the "cautious" heuristic — is *not* competitive.
+:::
+
+### Move-to-front is dynamically optimal {#sec-mf-optimal}
+
+Unlike splay trees (where dynamic optimality is a conjecture), move-to-front's dynamic optimality is a *theorem*.
+
+::: {.callout-important title="Theorem (Sleator-Tarjan, 1985)"}
+Let $A$ be any algorithm (online or offline, with free and paid exchanges). If $A$ and MF start with the same list ordering, then for every access sequence $S$ of length $m$:
+
+$$
+\text{cost}(\text{MF}, S) \le 2 \cdot \text{cost}(A, S) + X_{\text{paid}}(A) - X_{\text{free}}(A) - m
+$$ {#eq-mf-theorem}
+
+where $X_{\text{paid}}(A)$ and $X_{\text{free}}(A)$ are the numbers of paid and free exchanges $A$ makes.
+:::
+
+### Proof via inversions {#sec-mf-proof}
+
+**Potential function.** $\Phi$ = number of inversions between MF's list and $A$'s list. A pair $(i, j)$ is an **inversion** if $i$ precedes $j$ in MF's list but $j$ precedes $i$ in $A$'s list.
+
+**Initial potential:** $\Phi_0 = 0$ (both lists start in the same order). **Final potential:** $\Phi_{\text{final}} \ge 0$ (inversions are always non-negative). So $\text{actual cost} \le \text{amortized cost}$.
+
+**Amortized cost of Access($x$).** Suppose $x$ is the $k$-th item in MF's list and the $i$-th item in $A$'s list. Let $t$ = number of items that precede $x$ in MF but follow $x$ in $A$ (these are inversions involving $x$).
+
+- **Actual cost:** $k$ (walk to position $k$).
+- **Inversions undone** by moving $x$ to the front: $t$.
+- **Inversions created:** at most $k - t - 1$ (the $k - 1$ items that were ahead of $x$ in MF; $t$ of them were already inverted).
+- **Change in potential:** $\Delta\Phi = (k - t - 1) - t = k - 2t - 1$.
+- **Amortized cost:** $k + k - 2t - 1 = 2(k - t) - 1$.
+
+The items counted by $k - t - 1$ precede $x$ in *both* lists. There are only $i - 1$ positions before $x$ in $A$'s list, so $k - t - 1 \le i - 1$, giving $k - t \le i$.
+
+$$
+\text{amortized cost} = 2(k - t) - 1 \le 2i - 1
+$$ {#eq-mf-amortized}
+
+Summing over all operations gives $\text{cost}(\text{MF}) \le 2 \cdot \text{cost}(A) - m$.
+
+**Effect of exchanges.** Each free exchange by $A$ reduces $\Phi$ by at most 1 (potentially removes an inversion). Each paid exchange by $A$ increases $\Phi$ by at most 1 (potentially creates an inversion). Adding these contributions gives @eq-mf-theorem.
+
+<!-- TikZ: Two linked lists labeled "MF's list" and "A's list". Items colored to highlight inversions. Arrow showing x moving to front in MF's list, with annotations for t inversions undone and k-t-1 inversions created. -->
+
+
+## The paging problem {#sec-paging}
+
+You have a **cache** of size $k$ (fast memory) and an unbounded **disk** (slow memory). Pages are accessed one at a time:
+
+- If the requested page is in cache: **cache hit**, cost 0.
+- If the requested page is not in cache: **page fault**, cost 1. Bring the page into cache; if cache is full, **evict** one page first.
+
+The goal is to minimise the number of page faults.
+
+### Connection to list update {#sec-paging-list}
+
+Paging is a special case of list update with cost function $f(i) = 0$ if $i \le k$ (page is in cache) and $f(i) = 1$ otherwise. After a page fault, the accessed page must be moved into the first $k$ positions.
+
+### Eviction policies {#sec-eviction}
+
+| Policy | Evict... |
+|--------|----------|
+| **LRU** (Least Recently Used) | The page accessed longest ago |
+| **FIFO** (First In, First Out) | The page brought into cache longest ago |
+| **LFU** (Least Frequently Used) | The page with fewest total accesses |
+| **Farthest in Future** (Belady, 1966) | The page whose next access is farthest away |
+
+Farthest-in-future is optimal (Belady, 1966), but it requires knowing the future — it characterises OPT. LRU corresponds to move-to-front in the list update model.
+
+::: {.callout-caution}
+LFU is *not* frequency count in disguise. In frequency count, you never need to bring a page into cache (all items are already in the list). In paging, bringing a cold page into cache forces an eviction that may displace a hot page. LFU can have an *unbounded* competitive ratio.
+:::
+
+
+## LRU is k-competitive {#sec-lru-k}
+
+### 1-bit LRU {#sec-onebit}
+
+A cleaner algorithm for the proof: **1-bit LRU**.
+
+1. Initially, all pages are **unmarked**.
+2. On every access, **mark** the accessed page.
+3. On a page fault, evict any **unmarked** page (choice is arbitrary). If all pages are marked, **clear all marks**, then evict an unmarked page.
+
+LRU is a special case of 1-bit LRU: the least recently used page is always unmarked (it belongs to a previous phase), so LRU's eviction choice is always valid within the 1-bit LRU framework.
+
+### Proof {#sec-lru-proof}
+
+Break the access sequence into **phases**: a phase starts when all marks are cleared and ends just before the next clearing.
+
+- **Within a phase, 1-bit LRU has at most $k$ page faults.** Each fault brings in a new page and marks it. After $k$ faults, all $k$ pages in cache are marked. The phase ends when a $(k+1)$-st distinct page is requested.
+- **Within a phase, OPT has at least 1 fault.** The phase involves $k + 1$ distinct pages, but OPT's cache holds only $k$. By the pigeonhole principle, OPT faults at least once.
+
+Ratio per phase: at most $k$ / at least $1$ = $k$.
+
+::: {.callout-note}
+The 1-bit LRU proof works for FIFO too — FIFO also evicts a page from the previous phase. Both are $k$-competitive.
+:::
+
+
+## Lower bound: no deterministic algorithm beats k {#sec-lower-bound}
+
+::: {.callout-important title="Theorem (Sleator-Tarjan, 1985)"}
+No deterministic online paging algorithm has a competitive ratio less than $k$.
+:::
+
+**Proof.** The adversary maintains a universe of $k + 1$ pages. At each step, request the one page not in the algorithm's cache. The algorithm faults on *every* request.
+
+Meanwhile, OPT evicts the page whose next access is farthest in the future. Between consecutive OPT faults, at least $k$ distinct pages must be requested (OPT's cache covers $k$ pages, so it takes $k$ requests before a page outside its cache is needed). OPT faults at most once every $k$ steps.
+
+Ratio: algorithm faults $m$ times; OPT faults at least $m/k$ times. Competitive ratio $\ge k$.
+
+<!-- TikZ: Timeline showing algorithm faults at every step (red X marks) vs. OPT faults spaced k steps apart (blue X marks). Universe of k+1 pages shown above. -->
+
+
+## Circumventing the lower bound {#sec-circumvent}
+
+Three escape routes:
+
+### 1. Cache associativity {#sec-associativity}
+
+Real caches are often set-associative: each page maps to a small set of cache lines. The competitive ratio depends on the associativity (e.g., 4-way), not the total cache size — a much smaller number.
+
+### 2. Resource augmentation (Sleator-Tarjan, 1985) {#sec-resource-aug}
+
+Give the online algorithm $k$ cache slots but give OPT only $k' < k$ slots. Sleator and Tarjan showed that LRU and FIFO achieve a competitive ratio of:
+
+$$
+\frac{k}{k - k' + 1}
+$$ {#eq-resource-aug}
+
+If $k' = k/2$, the ratio is about 2. A modest resource advantage makes LRU nearly optimal.
+
+::: {.callout-tip}
+Resource augmentation is the most practically relevant escape. In real systems, your cache is usually larger than the "adversary's" working set, so LRU performs close to optimal.
+:::
+
+### 3. Randomization {#sec-randomization}
+
+A randomized eviction policy can defeat the deterministic lower bound — but the answer depends on the adversary's power.
+
+**Adversary types:**
+
+| Adversary | Knows... | Deterministic LB applies? |
+|-----------|----------|---------------------------|
+| **Omniscient** | All future random bits | Yes (randomness is useless) |
+| **Adaptive** | Past random bits, adapts future requests | Yes (knows cache state) |
+| **Oblivious** | Nothing; fixes $\sigma$ before any coins are flipped | No |
+
+The deterministic lower bound relies on the adversary seeing the cache state. An oblivious adversary cannot adapt, so randomization helps.
+
+
+## The marking algorithm {#sec-marking}
+
+::: {.callout-important title="Theorem (Fiat, Karp, Luby, McGeoch, Sleator, Young, 1991)"}
+The **marking algorithm** — 1-bit LRU where the unmarked page to evict is chosen **uniformly at random** — is $2H_k$-competitive against oblivious adversaries, where $H_k = 1 + 1/2 + \cdots + 1/k = \ln k + O(1)$ is the $k$-th harmonic number.
+
+No randomised algorithm can achieve a competitive ratio better than $\Omega(\log k)$ against oblivious adversaries.
+:::
+
+**Definition.** A randomised algorithm $A$ is $r$-competitive if for all sequences $S$:
+
+$$
+\mathbf{E}[\text{cost}(A, S)] \le r \cdot \text{cost}(\text{OPT}, S) + c
+$$ {#eq-rand-competitive}
+
+### Proof sketch {#sec-marking-proof}
+
+Break the sequence into phases (as with 1-bit LRU). At a given point in time, a page is:
+
+- **Clean:** not accessed in the previous phase *and* not yet accessed in this phase.
+- **Stale:** accessed in the previous phase but not yet in this phase.
+
+**Claim.** If a phase has $\ell$ **clean** page accesses:
+
+1. OPT pays at least $\ell / 2$.
+2. The marking algorithm pays at most $\ell \cdot H_k$ in expectation.
+
+The factor of 2 between these gives the $2H_k$ competitive ratio.
+
+*Why OPT pays at least $\ell/2$:* clean pages were not in *anyone's* cache at the start of the phase (neither OPT's nor ours). Each clean access forces OPT to fault — but OPT might have preloaded some of them in the previous phase. A careful two-phase averaging argument shows OPT faults at least $\ell/2$ times across consecutive phases.
+
+*Why the marking algorithm pays at most $\ell \cdot H_k$:* consider the $j$-th page fault in a phase. At that point, there are $k - (j - 1)$ unmarked pages in cache. The probability that the evicted page is the one the adversary will request next (causing another fault soon) is at most $1/(k - j + 1)$. Summing these probabilities over the phase gives the harmonic number.
+
+
+## Cheat sheet {#sec-cheat-sheet}
+
+::: {.callout-important title="Online algorithms and paging — cheat sheet"}
+
+**Competitive analysis.** $A$ is $r$-competitive if $\text{cost}(A, \sigma) \le r \cdot \text{OPT}(\sigma) + c$ for all $\sigma$.
+
+**Ski rental.** Rent $B$ days, then buy. Ratio: 2.
+
+**Doubling search.** Zigzag with exponentially increasing reach. Ratio: 9.
+
+**List update.** Move-to-front is 2-competitive against any algorithm (dynamically optimal). Proof: potential = inversions between MF and $A$.
+
+**Paging (deterministic):**
+
+| Algorithm | Competitive ratio |
+|-----------|-------------------|
+| LRU | $k$ (tight) |
+| FIFO | $k$ |
+| LFU | unbounded |
+| Any deterministic | $\ge k$ |
+
+**Paging (randomised, oblivious adversary):**
+
+| Algorithm | Competitive ratio |
+|-----------|-------------------|
+| Marking algorithm | $2H_k \approx 2\ln k$ |
+| Any randomised | $\ge \Omega(\log k)$ |
+
+**Escape routes:** resource augmentation (give OPT less memory), randomisation (oblivious adversary), cache associativity.
+
+**OPT for paging:** farthest-in-future (Belady, 1966).
+:::
+
+
+## FAQ — questions students actually asked {#sec-faq}
+
+**Q: Is least frequently used the same as frequency count from the list update problem?**
+
+No. In list update, all items are always in the list — you just reorder them. In paging, bringing a cold page into cache forces an eviction. LFU can be forced into an unbounded competitive ratio: imagine $k - 1$ hot pages and one cold page that keeps cycling in and out, evicting a hot page each time.
+
+**Q: You said 1-bit LRU has *exactly* $k$ faults per phase. But what if a page was already in cache from the previous phase and gets accessed without faulting?**
+
+Good catch — it's *at most* $k$ faults. If a page survives from the previous phase, accessing it marks it without a fault. The phase still ends after $k + 1$ distinct pages, but some of those may already be in cache.
+
+**Q: For the lower bound, why does OPT fault at most once every $k$ steps?**
+
+OPT evicts the page whose next request is farthest in the future. After evicting, the remaining $k$ pages in OPT's cache cover the next $k - 1$ requests (at worst, each request hits a different cached page). The $k$-th request might be the evicted page, causing the next fault.
+
+**Q: Why doesn't the deterministic lower bound apply to adaptive adversaries?**
+
+It *does*. An adaptive adversary knows your past random bits and therefore knows your current cache contents. It can always request the missing page, just like in the deterministic case. Randomisation only helps against oblivious adversaries who commit to the sequence before seeing any randomness.
+
+**Q: In the move-to-front proof, why is $k - t - 1 \le i - 1$?**
+
+The $k - t - 1$ items precede $x$ in *both* MF's list and $A$'s list. But $A$'s list has only $i - 1$ positions before $x$. So $k - t - 1 \le i - 1$, which gives $k - t \le i$. This is where the factor of 2 comes from.
+
+
+## Further reading {#sec-further-reading}
+
+1. **Sleator and Tarjan (1985).** "Amortized Efficiency of List Update and Paging Rules." *Communications of the ACM* 28(2). The foundational paper: competitive analysis, list update, paging, $k$-competitiveness of LRU. <!-- TODO: citation -->
+2. **Fiat, Karp, Luby, McGeoch, Sleator, Young (1991).** "Competitive Paging Algorithms." *Journal of Algorithms* 12(4). The marking algorithm and the $\Omega(\log k)$ lower bound for randomised algorithms. <!-- TODO: citation -->
+3. **Belady (1966).** "A Study of Replacement Algorithms for a Virtual-Storage Computer." *IBM Systems Journal* 5(2). Proves that farthest-in-future is optimal for paging. <!-- TODO: citation -->
+4. **Borodin and El-Yaniv (1998).** *Online Computation and Competitive Analysis.* Cambridge University Press. The standard textbook on competitive analysis. <!-- TODO: citation -->
+5. **Bentley and McGeoch (1985).** "Amortized Analyses of Self-Organizing Sequential Search Heuristics." *Communications of the ACM*. The pre-competitive-analysis study of list update heuristics. <!-- TODO: citation -->
+
+
+## Try it yourself {#sec-exercises}
+
+1. **Ski rental variant.** Suppose renting costs \$1/day and buying costs \$B, but the skis wear out after $W$ days of use (whether rented or owned). What is the optimal deterministic competitive ratio?
+
+2. **Transpose is not competitive.** Construct an access sequence on 3 items where the transpose heuristic costs $\Omega(m)$ while OPT costs $O(1)$ per operation. Conclude that transpose has an unbounded competitive ratio.
+
+3. **LRU simulation.** Implement LRU and farthest-in-future for a cache of size $k = 3$ with pages $\{1, 2, 3, 4\}$. Run both on the sequence $1, 2, 3, 4, 1, 2, 3, 4, \ldots$ (repeated 10 times). Count page faults for each.
+
+```python
+from collections import OrderedDict
+
+def lru_faults(sequence, k):
+    """Count page faults for LRU with cache size k."""
+    cache = OrderedDict()
+    faults = 0
+    for page in sequence:
+        if page in cache:
+            cache.move_to_end(page)      # mark as recently used
+        else:
+            faults += 1
+            if len(cache) >= k:
+                cache.popitem(last=False) # evict least recently used
+            cache[page] = True
+    return faults
+
+def fif_faults(sequence, k):
+    """Count page faults for farthest-in-future with cache size k."""
+    cache = set()
+    faults = 0
+    for idx, page in enumerate(sequence):
+        if page not in cache:
+            faults += 1
+            if len(cache) >= k:
+                # evict the page whose next use is farthest away
+                def next_use(p):
+                    for j in range(idx + 1, len(sequence)):
+                        if sequence[j] == p:
+                            return j
+                    return float('inf')
+                victim = max(cache, key=next_use)
+                cache.remove(victim)
+            cache.add(page)
+    return faults
+
+seq = [1, 2, 3, 4] * 10
+print(f"LRU faults: {lru_faults(seq, 3)}")
+print(f"OPT faults: {fif_faults(seq, 3)}")
+```
+
+4. **Resource augmentation.** Prove that LRU with cache size $k$ is $k/(k - k' + 1)$-competitive against OPT with cache size $k' \le k$. (*Hint:* modify the phase argument — OPT with a smaller cache faults more often.)
+
+5. **Marking algorithm analysis.** Prove that in a single phase with $\ell$ clean accesses, the expected number of faults by the marking algorithm is at most $\ell \cdot H_k$. (*Hint:* for the $j$-th fault, there are $k - j + 1$ unmarked pages. What is the probability that the evicted page is requested before the phase ends?)

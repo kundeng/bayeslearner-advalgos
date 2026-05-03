@@ -1,0 +1,433 @@
+---
+title: "Newton's Method and Completing the Interior Point Method"
+subtitle: "COMPSCI 224 Lecture 18 — Fall 2014"
+author: "Companion notes by Kun Deng"
+date: today
+abstract: |
+  Newton's method exploits second-order information to converge quadratically
+  when the Hessian is spectrally stable along the optimization path. Applied
+  inside the interior point framework, it restores "fine centrality" in a
+  constant number of steps after each barrier-parameter increment, yielding
+  the $O(\sqrt{m}\,L)$ iteration bound for linear programming. The lecture
+  closes with the initialization trick that bootstraps the algorithm from an
+  arbitrary interior point.
+---
+
+## Why this lecture matters
+
+Gradient descent sees the landscape through a first-order lens: a slope and a step size. Newton's method adds curvature, treating the objective as locally quadratic and jumping directly to the minimum of that quadratic. The payoff is dramatic—under mild spectral-stability conditions, one Newton step squares the error. This lecture wires Newton's method into the interior point framework from the previous lecture, proving the $O(\sqrt{m}\,L)$ iteration complexity of path-following IPMs. The initialization trick at the end closes the last gap: how to find a starting point without already having solved the LP.
+
+::: {.callout-tip title="30-second story"}
+1. Newton's method sets $x_1 = x_0 - H(x_0)^{-1}\nabla f(x_0)$, minimising the second-order Taylor expansion.
+2. If the Hessian is spectrally stable along the Newton step, one step multiplies the error by $\approx \varepsilon/(1-\varepsilon)$.
+3. "Centrality" measures how close a point is to the minimiser of the barrier function $f_\lambda$ in the Hessian-inverse norm.
+4. A finely central point ($\delta \le 1/100$) for $\lambda_k$ remains coarsely central ($\delta \le 1/3$) for $\lambda_{k+1} = (1+\alpha)\lambda_k$ when $\alpha = O(1/\sqrt{m})$.
+5. Constant Newton steps restore fine centrality, so the IPM needs $O(\sqrt{m}\,L)$ outer iterations total.
+6. Initialisation: find an obvious interior point for an augmented LP, walk *backwards* along the central path to the analytic centre, swap in the real objective, then walk forward.
+:::
+
+## Newton's method: the second-order update {#sec-newton-update}
+
+### Setup and motivation
+
+You want to minimise a function $f : \mathbf{R}^n \to \mathbf{R}$. You have **oracle access** to three quantities at any query point $x$:
+
+- $f(x)$ — the function value,
+- $\nabla f(x)$ — the gradient (first-order),
+- $\nabla^2 f(x)$ — the Hessian (second-order).
+
+Gradient descent approximates $f$ by its *first*-order Taylor expansion plus a quadratic penalty, then minimises that surrogate. Newton's method goes one step further: it approximates $f$ by its full *second*-order Taylor expansion and minimises that directly.
+
+By Taylor's theorem, for any $y$ near $x_0$:
+
+$$
+f(y) \;\approx\; f(x_0) + \nabla f(x_0)^\top (y - x_0) + \frac{1}{2}(y - x_0)^\top \nabla^2 f(x_0)\,(y - x_0)
+$$ {#eq-taylor2}
+
+Setting the gradient of the right-hand side to zero and solving gives the Newton update:
+
+$$
+x_1 \;=\; x_0 - \bigl[\nabla^2 f(x_0)\bigr]^{-1}\,\nabla f(x_0)
+$$ {#eq-newton-step}
+
+<!-- TikZ: 1D plot showing f(x), its second-order Taylor approximation at x_0 (a parabola), and x_1 at the parabola's minimum -->
+
+::: {.callout-tip title="Intuition"}
+Gradient descent asks "which direction is downhill?" and takes a cautious step. Newton's method asks "where is the bottom of the bowl I'm sitting in?" and jumps there in one shot. When the objective is nearly quadratic, that jump is nearly perfect.
+:::
+
+### Convergence theorem {#sec-newton-convergence}
+
+The key assumption is **spectral stability of the Hessian** along the line segment from $x_0$ to $x_1$.
+
+Define $x_t = x_0 + t(x_1 - x_0)$ for $t \in [0,1]$. Suppose there exists $\varepsilon > 0$ such that for all $t \in [0,1]$:
+
+$$
+(1-\varepsilon)\,\nabla^2 f(x_0) \;\preceq\; \nabla^2 f(x_t) \;\preceq\; (1+\varepsilon)\,\nabla^2 f(x_0)
+$$ {#eq-hessian-stability}
+
+Here $A \preceq B$ means $B - A$ is positive semidefinite.
+
+**Theorem (Newton's method convergence).** Under @eq-hessian-stability:
+
+$$
+\bigl\|\nabla f(x_1)\bigr\|_{\nabla^2 f(x_1)^{-1}} \;\le\; \frac{\varepsilon}{1-\varepsilon}\,\bigl\|\nabla f(x_0)\bigr\|_{\nabla^2 f(x_0)^{-1}}
+$$ {#eq-newton-progress}
+
+where $\|v\|_A = \sqrt{v^\top A\, v}$ is the norm induced by a PSD matrix $A$.
+
+::: {.callout-note title="Interpreting the progress guarantee"}
+At the minimiser, $\nabla f = 0$. The quantity $\|\nabla f(x)\|_{H^{-1}}$ measures distance to optimality in a geometry adapted to the curvature. Each Newton step multiplies this distance by $\varepsilon/(1-\varepsilon)$. When $\varepsilon < 1/2$, this is a contraction—the error shrinks geometrically.
+:::
+
+### Proof of the convergence theorem {#sec-newton-proof}
+
+The proof has three moves: (1) express the new gradient as an integral, (2) exploit the Hessian stability to bound that integral, (3) switch norms carefully.
+
+**Step 1: Fundamental theorem of calculus.** The gradient at the new iterate can be written as:
+
+$$
+\nabla f(x_1) = \nabla f(x_0) + \int_0^1 \nabla^2 f(x_t)\,(x_1 - x_0)\,dt
+$$ {#eq-ftc-gradient}
+
+Substitute the Newton step $x_1 - x_0 = -[\nabla^2 f(x_0)]^{-1}\nabla f(x_0)$ from @eq-newton-step. The $\nabla f(x_0)$ and the $-\nabla^2 f(x_0)[\nabla^2 f(x_0)]^{-1}\nabla f(x_0)$ cancel, leaving:
+
+$$
+\nabla f(x_1) = \int_0^1 \bigl[\nabla^2 f(x_0) - \nabla^2 f(x_t)\bigr]\,[\nabla^2 f(x_0)]^{-1}\,\nabla f(x_0)\,dt
+$$ {#eq-gradient-integral}
+
+**Step 2: A spectral lemma.** The condition $(1-\varepsilon)A \preceq B \preceq (1+\varepsilon)A$ is equivalent to $-\varepsilon I \preceq A^{-1/2}(B-A)A^{-1/2} \preceq \varepsilon I$. Define:
+
+$$
+M_t = [\nabla^2 f(x_0)]^{-1/2}\bigl[\nabla^2 f(x_t) - \nabla^2 f(x_0)\bigr][\nabla^2 f(x_0)]^{-1/2}
+$$
+
+By @eq-hessian-stability, $-\varepsilon I \preceq M_t \preceq \varepsilon I$ for all $t$. This implies $M_t^2 \preceq \varepsilon^2 I$—squaring a matrix sandwiched between $\pm\varepsilon I$ gives one bounded by $\varepsilon^2 I$.
+
+**Step 3: Norm computation.** Take the $\|\cdot\|_{\nabla^2 f(x_0)^{-1}}$ norm of @eq-gradient-integral. By the triangle inequality (bringing the norm inside the integral):
+
+$$
+\bigl\|\nabla f(x_1)\bigr\|_{\nabla^2 f(x_0)^{-1}} \;\le\; \int_0^1 \bigl\|[\nabla^2 f(x_0)]^{-1/2} M_t\, [\nabla^2 f(x_0)]^{-1/2}\nabla f(x_0)\bigr\|_2\,dt
+$$
+
+Writing $z = [\nabla^2 f(x_0)]^{-1/2}\nabla f(x_0)$, the integrand becomes $\|M_t z\|_2 \le \varepsilon\|z\|_2$ (since $M_t^2 \preceq \varepsilon^2 I$). But $\|z\|_2 = \|\nabla f(x_0)\|_{\nabla^2 f(x_0)^{-1}}$. So:
+
+$$
+\bigl\|\nabla f(x_1)\bigr\|_{\nabla^2 f(x_0)^{-1}} \;\le\; \varepsilon\,\bigl\|\nabla f(x_0)\bigr\|_{\nabla^2 f(x_0)^{-1}}
+$$ {#eq-same-norm-bound}
+
+**Step 4: Switch norms.** The theorem states the bound in the $x_1$-norm, not the $x_0$-norm. Since the Hessians are $(1\pm\varepsilon)$-close, their inverses satisfy $\frac{1}{1+\varepsilon}H_0^{-1} \preceq H_1^{-1} \preceq \frac{1}{1-\varepsilon}H_0^{-1}$. Converting:
+
+$$
+\bigl\|\nabla f(x_1)\bigr\|_{H_1^{-1}} \;\le\; \frac{1}{\sqrt{1-\varepsilon}}\bigl\|\nabla f(x_1)\bigr\|_{H_0^{-1}} \;\le\; \frac{\varepsilon}{\sqrt{1-\varepsilon}}\,\bigl\|\nabla f(x_0)\bigr\|_{H_0^{-1}}
+$$
+
+A similar conversion on the right-hand side (expressing in the $x_0$-norm) gives the final bound $\varepsilon/(1-\varepsilon)$. $\square$
+
+<!-- TikZ: diagram showing x_0, x_1, the line x_t between them, and shaded "spectral tube" indicating the Hessian stays within (1 +/- epsilon) along the path -->
+
+::: {.callout-warning title="The spectral-switch step"}
+Switching the norm from $\nabla^2 f(x_1)^{-1}$ to $\nabla^2 f(x_0)^{-1}$ costs a factor $1/(1-\varepsilon)$ because the inverse Hessians are sandwiched within that factor. This is where the denominator in $\varepsilon/(1-\varepsilon)$ comes from. The proof is tight: you cannot avoid paying this factor.
+:::
+
+### Comparison with gradient descent
+
+| | Gradient descent | Newton's method |
+|---|---|---|
+| Oracle | $f$, $\nabla f$ | $f$, $\nabla f$, $\nabla^2 f$ |
+| Assumption | Hessian bounded ($\mu I \preceq H \preceq LI$) | Hessian *stable* along step |
+| Convergence | Linear: error $\times (1 - \mu/L)$ | Quadratic-like: error $\times \varepsilon$ |
+| Step cost | $O(n)$ | $O(n^\omega)$ (linear system) |
+| Step size | Requires tuning ($\eta = 1/L$) | No step size—determined by curvature |
+
+::: {.callout-tip title="When Newton wins"}
+Newton's method pays more per step (matrix inversion vs. gradient evaluation) but needs far fewer steps. For the IPM, where we need high precision and the Hessian is structured (enabling fast solves), Newton is the right choice.
+:::
+
+## Centrality and the path-following strategy {#sec-centrality}
+
+### The barrier function (recap)
+
+The IPM solves $\min\; c^\top x$ subject to $Ax \ge b$ by repeatedly minimising the log-barrier:
+
+$$
+f_\lambda(x) = \lambda\, c^\top x - \sum_{i=1}^m \ln(s_i(x)), \qquad s(x) = Ax - b
+$$ {#eq-barrier}
+
+As $\lambda \to \infty$, minimisers of $f_\lambda$ converge to the LP optimum. The gradient and Hessian are:
+
+$$
+\nabla f_\lambda(x) = \lambda c - A^\top S(x)^{-1}\mathbf{1}, \qquad \nabla^2 f_\lambda(x) = A^\top S(x)^{-2} A
+$$ {#eq-barrier-derivatives}
+
+where $S(x) = \text{diag}(s(x))$.
+
+<!-- TikZ: central path diagram showing the feasible polytope, the analytic centre, and the central path curving toward the LP optimum as lambda grows, with a few points labelled lambda_0, lambda_1, ... -->
+
+### Centrality measure
+
+Define the **centrality** of a point $x$ for parameter $\lambda_k$ as:
+
+$$
+\delta_k(x) \;=\; \bigl\|\nabla f_{\lambda_k}(x)\bigr\|_{[\nabla^2 f_{\lambda_k}(x)]^{-1}}
+$$ {#eq-centrality}
+
+This is exactly the quantity that Newton's method contracts. When $\delta_k(x) = 0$, the point $x$ is the exact minimiser of $f_{\lambda_k}$.
+
+**Definitions.**
+
+- $x$ is **finely central** for $f_{\lambda_k}$ if $\delta_k(x) \le 1/100$.
+- $x$ is **coarsely central** for $f_{\lambda_k}$ if $\delta_k(x) \le 1/3$.
+
+::: {.callout-important title="The path-following invariant"}
+The IPM maintains a finely central point $\tilde{x}_{\lambda_k}$ at all times. After incrementing $\lambda$, the point may degrade to coarsely central. A constant number of Newton steps restore fine centrality.
+:::
+
+### Recovering fine centrality from coarse centrality {#sec-coarse-to-fine}
+
+If $x$ is coarsely central, $\delta_k(x) \le 1/3$. To apply the Newton convergence theorem, we must verify that the Hessian is spectrally stable along the Newton step. The Hessian $A^\top S(x)^{-2} A$ depends entirely on the slack vector $s(x) = Ax - b$. So we need: **how much do slacks change along the Newton direction?**
+
+For a point $x_t$ along the Newton step (i.e., $x_t = x + t(x_1 - x)$ where $x_1$ is the Newton iterate), the relative slack change is:
+
+$$
+\bigl\|S(x)^{-1}\bigl(s(x_t) - s(x)\bigr)\bigr\|_\infty \;\le\; \bigl\|S(x)^{-1} A(x_t - x)\bigr\|_2
+$$
+
+The right-hand side equals $t$ times the centrality $\delta_k(x)$. Why? Because $x_t - x = -t\,H^{-1}\nabla f_\lambda(x)$, and composing with $S^{-1}A$ and taking the $\ell_2$-norm recovers exactly the centrality definition (after algebraic simplification using the Hessian structure $H = A^\top S^{-2}A$).
+
+Since centrality is at most $1/3$, we get $\|S^{-1}(s(x_t) - s(x))\|_\infty \le t/3$. For the Hessian to be $(1\pm\varepsilon)$-stable, we need this to be at most $\varepsilon$. Taking $\varepsilon = 1/3$: the condition holds for all $t \in [0,1]$.
+
+The Newton progress theorem then gives contraction factor $\varepsilon/(1-\varepsilon) = (1/3)/(2/3) = 1/2$. Starting from centrality $1/3$, after $k$ Newton steps: $\delta \le (1/2)^k / 3$. Reaching $1/100$ requires $k = \lceil\log_2(100/3)\rceil = 6$ steps.
+
+::: {.callout-tip title="The self-referential structure"}
+The proof is almost circular: we need small centrality to guarantee Hessian stability, and we need Hessian stability to guarantee that Newton's method reduces centrality. The trick is that coarse centrality ($\le 1/3$) is *just barely* enough to guarantee stability with $\varepsilon = 1/3$, which is *just barely* a contraction ($1/2 < 1$). The constants $1/100$ and $1/3$ are chosen to make this self-consistency work.
+:::
+
+## How much can we increment $\lambda$? {#sec-lambda-increment}
+
+The critical question: given a finely central point for $\lambda_k$, how large can $\lambda_{k+1}$ be while the point remains coarsely central?
+
+Set $\lambda_{k+1} = (1+\alpha)\lambda_k$. By the triangle inequality on the Hessian-inverse norm:
+
+$$
+\delta_{k+1}(\tilde{x}_{\lambda_k}) \;\le\; (1+\alpha)\,\delta_k(\tilde{x}_{\lambda_k}) + \alpha\,\bigl\|A^\top S(\tilde{x})^{-1}\mathbf{1}\bigr\|_{[\nabla^2 f(\tilde{x})]^{-1}}
+$$ {#eq-delta-increment}
+
+<!-- TikZ: number line showing delta_k at 1/100, delta_{k+1} somewhere between, and the coarse threshold at 1/3 -->
+
+### The projection bound {#sec-projection}
+
+The key algebraic fact: the quantity $\|A^\top S^{-1}\mathbf{1}\|_{[A^\top S^{-2}A]^{-1}}$ has a clean geometric interpretation.
+
+Expand the norm definition. Let $H = A^\top S^{-2}A$. Then:
+
+$$
+\|A^\top S^{-1}\mathbf{1}\|_{H^{-1}}^2 = \mathbf{1}^\top S^{-1}A\,(A^\top S^{-2}A)^{-1}\,A^\top S^{-1}\mathbf{1}
+$$
+
+The matrix $S^{-1}A(A^\top S^{-2}A)^{-1}A^\top S^{-1}$ is an **orthogonal projection** $\Pi$ onto the column space of $S^{-1}A$. This follows from the general formula: for any full-rank $B$, the matrix $B(B^\top B)^{-1}B^\top$ projects onto $\text{col}(B)$.
+
+So the norm equals $\|\Pi\,\mathbf{1}\|_2$. Since projection cannot increase norm:
+
+$$
+\|\Pi\,\mathbf{1}\|_2 \;\le\; \|\mathbf{1}\|_2 = \sqrt{m}
+$$ {#eq-projection-bound}
+
+::: {.callout-note title="Why a projection?"}
+The projection matrix $\Pi = S^{-1}A(A^\top S^{-2}A)^{-1}A^\top S^{-1}$ is the "hat matrix" of weighted least squares. It projects $\mathbf{1}$ onto the subspace of vectors expressible as $S^{-1}Ay$ for some $y$. When $A$ has full row rank ($m \le n$), this subspace is all of $\mathbf{R}^m$ and $\Pi\mathbf{1} = \mathbf{1}$ exactly, making the bound tight.
+:::
+
+### The $O(\sqrt{m})$ bound {#sec-sqrt-m}
+
+Substituting @eq-projection-bound into @eq-delta-increment:
+
+$$
+\delta_{k+1}(\tilde{x}_{\lambda_k}) \;\le\; (1+\alpha)\cdot\frac{1}{100} + \alpha\sqrt{m}
+$$
+
+For this to stay below $1/3$ (maintaining coarse centrality), we need:
+
+$$
+\frac{1+\alpha}{100} + \alpha\sqrt{m} \;\le\; \frac{1}{3}
+$$
+
+The dominant term is $\alpha\sqrt{m}$. Choosing $\alpha = 1/(10\sqrt{m})$ gives:
+
+$$
+\frac{1}{100} + \frac{1}{1000\sqrt{m}} + \frac{1}{10} \;\approx\; 0.11 \;<\; \frac{1}{3} \quad\checkmark
+$$
+
+### Putting it all together: the complete iteration count
+
+The IPM algorithm:
+
+1. Start with a finely central point for $\lambda_0 \approx e^{-O(L)}$.
+2. Set $\lambda_{k+1} = (1 + 1/(10\sqrt{m}))\,\lambda_k$.
+3. Run $O(1)$ Newton steps to restore fine centrality.
+4. Repeat until $\lambda$ reaches $\approx m\,e^{O(L)}$.
+
+The number of outer iterations is $\log_{1+1/\sqrt{m}}(m\,e^{2L}) \approx \sqrt{m}\cdot(2L + \ln m) = O(\sqrt{m}\,L)$.
+
+::: {.callout-important title="Iteration complexity"}
+Each outer step increments $\lambda$ by factor $(1 + 1/\sqrt{m})$. Going from $\lambda_{\text{init}} \approx e^{-L}$ to $\lambda_{\text{final}} \approx m\,e^L$ requires $O(\sqrt{m}\, L)$ increments, each costing $O(1)$ Newton steps. Total: $O(\sqrt{m}\,L)$ Newton steps, each dominated by solving an $n \times n$ linear system. The overall runtime is $O(\sqrt{m}\,L\cdot n^\omega)$ where $\omega$ is the matrix multiplication exponent.
+:::
+
+## Initialising the IPM {#sec-initialisation}
+
+The path-following algorithm needs a finely central starting point. But we can't just pick an arbitrary feasible point—it won't have the right centrality. The trick is a three-phase bootstrap.
+
+### Phase 1: Augment the LP
+
+Introduce a slack variable $z$ and form:
+
+$$
+\text{LP}': \quad \min\; c^\top x + N z \quad\text{s.t.}\quad Ax + \mathbf{1}\,z \ge b,\quad 0 \le z \le 2^{L+1},\quad -2^{L+1}\mathbf{1} \le x \le 2^{L+1}\mathbf{1}
+$$
+
+where $N$ is exponentially large (e.g., $N = 100^L$). If the original LP is bounded and feasible, the optimum of LP$'$ must have $z = 0$—the penalty $Nz$ forces $z$ down.
+
+LP$'$ has an **obvious interior point**: set $x = 0$ and $z = \|b\|_\infty$. The constraint $Ax + \mathbf{1}z \ge b$ becomes $\mathbf{1}\|b\|_\infty \ge b$, which holds entry-wise.
+
+### Phase 2: Find the analytic centre
+
+The obvious interior point is not yet central for any useful $\lambda$. The trick: **reverse-engineer a cost function** for which it *is* perfectly central.
+
+Set $\lambda = 1$. The gradient of $f_\lambda$ is zero when $c = A^\top S(x')^{-1}\mathbf{1}$. So define a synthetic cost $c' = A^\top S(x')^{-1}\mathbf{1}$—then the obvious point $x'$ is *perfectly* central (centrality zero) for $f_1$ with cost $c'$.
+
+Now **walk backwards**: decrement $\lambda$ by factor $(1 - 1/\sqrt{m})$ repeatedly, running Newton steps to maintain fine centrality. When $\lambda$ is exponentially small, the cost term is negligible and the point is near the **analytic centre** of the feasible region. At this point, fine centrality holds for *any* cost function.
+
+### Phase 3: Walk forward with the real cost
+
+Switch the cost from $c'$ to the real $c$. The point remains finely central because $\lambda$ is tiny. Now run the forward path-following algorithm, incrementing $\lambda$ by $(1+1/\sqrt{m})$ each step until convergence.
+
+::: {.callout-note title="Aside (mine, not the lecturer's)"}
+The backwards-then-forwards initialisation is elegant but adds $O(\sqrt{m}\,L)$ steps to the runtime. In practice, most IPM implementations use heuristic warm-starts or the "big-$M$" method, which avoids the backward walk at the cost of weaker worst-case guarantees.
+:::
+
+## Beyond $\sqrt{m}$: the Lee–Sidford improvement {#sec-lee-sidford}
+
+The $\sqrt{m}$ in the iteration count comes from the projection bound @eq-projection-bound: projecting $\mathbf{1} \in \mathbf{R}^m$ onto the column space of $S^{-1}A$ can yield a vector as large as $\sqrt{m}$. But this is tight only when $A$ has full row rank. What if $m \gg \text{rank}(A)$—many redundant or nearly-redundant constraints?
+
+Lee and Sidford (2014) improved the iteration count to $O(\sqrt{\text{rank}(A)}\, L)$ by using a **weighted barrier**:
+
+$$
+\phi_w(x) = -\sum_{i=1}^m w_i \ln(s_i(x))
+$$ {#eq-weighted-barrier}
+
+### Why the standard barrier is wasteful
+
+Consider a simple example: the LP $\min c^\top x$ subject to $a^\top x \ge b$, but with the constraint written $k$ times. The standard barrier sums $-\ln(a^\top x - b)$ a total of $k$ times—effectively treating the same constraint as $k$ independent constraints. The resulting centrality bound scales with $\sqrt{k}$ even though the feasible region is identical to the single-constraint version.
+
+The weighted barrier assigns a weight $w_i$ to each constraint. If you give the repeated constraint total weight 1 (split evenly as $1/k$ each), the effective "barrier parameter" depends on $\sum_i w_i$ rather than $m$. Lee and Sidford show that appropriate weights can reduce the effective dimension from $m$ to $\text{rank}(A)$.
+
+### The algorithmic challenge
+
+Finding the optimal weight vector requires solving a geometric problem: the weights must be "Lewis weights"—the leverage scores of the constraint matrix in the current slack geometry. These depend on $x$ (through the slack), so they change as the algorithm progresses. Lee and Sidford show how to maintain an approximate weight vector efficiently, updating it alongside the central path traversal.
+
+The analysis must also account for how centrality changes when both $\lambda$ *and* $w$ are updated simultaneously—a more complex version of the single-parameter analysis we did above.
+
+::: {.callout-note title="Aside (mine, not the lecturer's)"}
+The weighted-barrier idea traces to Nesterov and Nemirovski's theory of self-concordant barriers, which proved *existence* of good weights non-constructively. Lee and Sidford's contribution was making the weight maintenance algorithmic and efficient. Their 2014 paper "Path Finding Methods for Linear Programming: Solving Linear Programs in $\tilde{O}(\sqrt{\text{rank}})$ Iterations" appeared at FOCS 2014. As of 2022, further improvements by Cohen, Lee, and Song achieve $O(n^{\omega} \log(n/\varepsilon))$ time using a completely different approach based on inverse maintenance.
+:::
+
+## Cheat sheet {#sec-cheatsheet}
+
+::: {.callout-important title="Cheat sheet — Newton's Method and IPM Completion"}
+
+**Newton's method**
+
+- Update: $x_1 = x_0 - [\nabla^2 f(x_0)]^{-1}\nabla f(x_0)$
+- Progress: $\|\nabla f(x_1)\|_{H(x_1)^{-1}} \le \frac{\varepsilon}{1-\varepsilon}\|\nabla f(x_0)\|_{H(x_0)^{-1}}$
+- Requires: Hessian stable within $(1\pm\varepsilon)$ along the step
+- Converges when $\varepsilon < 1/2$ (geometric contraction)
+
+**IPM centrality**
+
+- Centrality: $\delta_k(x) = \|\nabla f_{\lambda_k}(x)\|_{H(x)^{-1}}$
+- Fine: $\delta \le 1/100$. Coarse: $\delta \le 1/3$.
+- At coarse centrality, Hessian stability holds with $\varepsilon = 1/3$
+- $O(1)$ Newton steps: coarse $\to$ fine
+
+**Lambda schedule**
+
+- Increment: $\lambda_{k+1} = (1 + 1/(10\sqrt{m}))\,\lambda_k$
+- Centrality jump: at most $(1+\alpha)/100 + \alpha\sqrt{m}$
+- Total outer iterations: $O(\sqrt{m}\,L)$
+- Each iteration: one $n \times n$ linear system solve
+
+**Initialisation**
+
+1. Augment LP with slack variable $z$, large penalty $Nz$
+2. Reverse-engineer cost for which obvious point is perfectly central
+3. Walk backwards to analytic centre ($\lambda \to 0$)
+4. Swap to real cost, walk forward ($\lambda \to \infty$)
+
+**Lee–Sidford (2014):** weighted barriers reduce $\sqrt{m}$ to $\sqrt{\text{rank}(A)}$
+:::
+
+## FAQ — questions students actually asked {#sec-faq}
+
+**Q: Does the Hessian need to be invertible for Newton's method to work?**
+
+For the IPM barrier function $f_\lambda$, the Hessian $A^\top S(x)^{-2}A$ is invertible whenever $A$ has full column rank and $x$ is in the strict interior (all slacks positive). In general, if the Hessian is singular, you restrict to its column space—but for our application, invertibility holds throughout.
+
+**Q: The epsilon in Newton's theorem depends on the function. Does it change as we change $\lambda$?**
+
+Yes, but that's fine. We apply Newton's method independently for each $\lambda_k$. As long as the $\varepsilon$ for each instantiation is bounded by a fixed constant (here $1/3$), the constant number of Newton steps per outer iteration is guaranteed.
+
+**Q: Why does the projection bound give $\sqrt{m}$ and not something smaller?**
+
+The projection of $\mathbf{1} \in \mathbf{R}^m$ onto any subspace has $\ell_2$-norm at most $\|\mathbf{1}\|_2 = \sqrt{m}$. This bound is tight when $A$ has full row rank ($m \le n$)—the projection is all of $\mathbf{1}$. When $\text{rank}(A) < m$, the projection is smaller, which is why Lee–Sidford achieves $\sqrt{\text{rank}}$.
+
+**Q: What's the best known iteration complexity for LP?**
+
+As of this lecture (2014), Lee and Sidford achieved $O(\sqrt{\text{rank}(A)}\,L)$ iterations. The per-iteration cost is dominated by solving a linear system, which can be done in $O(n^\omega)$ time (where $\omega$ is the matrix multiplication exponent).
+
+**Q: Why walk backwards to the analytic centre instead of just starting at a small $\lambda$?**
+
+You need a point that is *finely central* for a small $\lambda$. An arbitrary interior point has no centrality guarantee. Walking backwards from a perfectly central point (for the synthetic cost) maintains fine centrality at every step, delivering a certified starting point.
+
+## Further reading {#sec-further-reading}
+
+- **Nesterov and Nemirovski**, *Interior-Point Polynomial Algorithms in Convex Optimization* (SIAM, 1994). The foundational monograph on self-concordant barriers and polynomial IPMs.
+- **Renegar**, *A Mathematical View of Interior-Point Methods in Convex Optimization* (MPS-SIAM, 2001). A concise, readable treatment of the path-following framework.
+- **Lee and Sidford**, "Path Finding Methods for Linear Programming: Solving Linear Programs in $\tilde{O}(\sqrt{\text{rank}})$ Iterations" (FOCS 2014). The improvement discussed at the end of lecture.
+- **Wright**, *Primal-Dual Interior-Point Methods* (SIAM, 1997). Practical algorithms and implementation details.
+- **Nocedal and Wright**, *Numerical Optimization*, Chapter 19 (Springer, 2006). Newton's method in the context of general nonlinear programming.
+
+## Try it yourself {#sec-exercises}
+
+1. **Verify the Taylor step.** Show that the minimiser of the second-order Taylor expansion $f(x_0) + \nabla f(x_0)^\top(y-x_0) + \frac{1}{2}(y-x_0)^\top H(y-x_0)$ is indeed $x_0 - H^{-1}\nabla f(x_0)$, by taking the gradient with respect to $y$ and setting it to zero.
+
+2. **Spectral sandwiching of inverses.** If $(1-\varepsilon)A \preceq B \preceq (1+\varepsilon)A$ for PSD invertible matrices $A, B$ and $\varepsilon < 1$, show that $\frac{1}{1+\varepsilon}A^{-1} \preceq B^{-1} \preceq \frac{1}{1-\varepsilon}A^{-1}$.
+
+3. **Centrality after increment.** Suppose $\delta_k(\tilde{x}) = 0$ (the point is the exact minimiser). Show that after setting $\lambda_{k+1} = (1+\alpha)\lambda_k$, the centrality $\delta_{k+1}(\tilde{x}) \le \alpha\sqrt{m}$. (*Hint:* the $(1+\alpha)\delta_k$ term vanishes.)
+
+4. **Implement one Newton step.** Given the LP $\min\; c^\top x$ s.t. $Ax \ge b$ with $A \in \mathbf{R}^{5 \times 3}$, implement a function that computes one Newton step for the barrier $f_\lambda$ at a given interior point $x$. Use `numpy.linalg.solve` for the linear system. Verify that centrality decreases.
+
+```python
+import numpy as np
+
+def newton_step(A, b, c, lam, x):
+    """One Newton step for the log-barrier f_lambda."""
+    s = A @ x - b                         # slack vector
+    S_inv = np.diag(1.0 / s)
+    S_inv2 = np.diag(1.0 / s**2)
+    grad = lam * c - A.T @ S_inv @ np.ones(len(b))
+    H = A.T @ S_inv2 @ A
+    dx = np.linalg.solve(H, -grad)
+    return x + dx
+
+# Example: 5 constraints, 3 variables
+np.random.seed(42)
+A = np.random.randn(5, 3)
+x_feas = np.ones(3)
+b = A @ x_feas - 1.0  # ensures slack >= 1
+c = np.array([1.0, 2.0, 3.0])
+lam = 1.0
+
+x_new = newton_step(A, b, c, lam, x_feas)
+print("New point:", x_new)
+```
+
+5. **The rank gap.** Construct an LP where $m = 100$ constraints but $\text{rank}(A) = 5$. Experimentally verify that the centrality jump $\delta_{k+1} - \delta_k$ grows with $\sqrt{\text{rank}(A)}$ rather than $\sqrt{m}$ when using the appropriate projection.

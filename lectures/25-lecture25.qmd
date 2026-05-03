@@ -1,0 +1,452 @@
+---
+title: "Inclusion-Exclusion, Möbius Inversion, and the Streaming Model"
+subtitle: "COMPSCI 224 Lecture 25 — Fall 2014"
+author: "Companion notes by Kun Deng"
+date: today
+abstract: |
+  Möbius inversion over the subset lattice turns the inclusion-exclusion
+  principle into a computational tool: given a function and its Zeta
+  transform, you can recover the original in $O^*(2^n)$ time via Yates'
+  algorithm. Applied to graph coloring, this yields a $k$-colorability
+  test in $2^n \operatorname{poly}(n)$ time and polynomial space—matching
+  the dynamic-programming bound in time while slashing exponential space.
+  The lecture then pivots to the streaming model, proves that
+  deterministic exact algorithms for distinct-element counting require
+  linear space, and sketches the Flajolet–Martin algorithm that breaks
+  the barrier with randomization and approximation.
+---
+
+## Why this lecture matters
+
+Two seemingly unrelated ideas—combinatorial transforms on the Boolean lattice and sublinear-space data structures—share a common thread: both trade exact knowledge for computational efficiency. The Zeta transform / Möbius inversion machinery gives you a principled way to derive and compute formulas like the $k$-colorability criterion; Yates' algorithm then evaluates them in optimal $O^*(2^n)$ time. The streaming lower bound, proved by a clean encoding argument, shows that randomization and approximation are not luxuries but necessities for any sublinear-space algorithm over massive data.
+
+::: {.callout-tip title="30-second story"}
+1. The **Zeta transform** $\hat{f}(S) = \sum_{R \subseteq S} f(R)$ sums a function over all subsets; **Möbius inversion** $\tilde{f}(S) = \sum_{R \subseteq S} (-1)^{|S|-|R|} f(R)$ undoes it.
+2. Composing the two in either order returns the original function—this is the inclusion-exclusion principle in operator form.
+3. The number of ways to $k$-colour a graph equals a Möbius inversion of the $k$-th power of $\hat{f}$, where $f$ indicates non-empty independent sets.
+4. **Yates' algorithm** computes all $2^n$ values of $\hat{f}$ in $O(n \cdot 2^n)$ time and $O(n \cdot 2^n)$ space via a simple recurrence.
+5. Any deterministic streaming algorithm for distinct-element counting needs $\Omega(n)$ bits—proved by turning it into a lossless compression scheme.
+6. The **Flajolet–Martin** algorithm sidesteps this barrier: hash items into $[0,1]$, track the minimum, and output $1/z - 1$. Averaging $O(1/\varepsilon^2)$ copies gives a $(1+\varepsilon)$-approximation.
+:::
+
+## Möbius inversion: undoing the Zeta transform {#sec-mobius}
+
+### The two transforms
+
+Fix a ground set $[n] = \{1, \ldots, n\}$ and a function $f : 2^{[n]} \to \mathcal{R}$ mapping subsets to elements of some ring $\mathcal{R}$. The ring structure is all you need—addition and multiplication, not division.
+
+**Zeta transform.** The *Zeta transform* of $f$ is
+
+$$
+\hat{f}(S) = \sum_{R \subseteq S} f(R).
+$$ {#eq-zeta}
+
+For each set $S$, sum $f$ over every subset of $S$.
+
+**Möbius inversion.** The *Möbius inversion* of $f$ is
+
+$$
+\tilde{f}(S) = \sum_{R \subseteq S} (-1)^{|S| - |R|}\, f(R).
+$$ {#eq-mobius}
+
+Same summation range, but each term carries an alternating sign determined by how many elements of $S$ are missing from $R$.
+
+These two operations are inverses of each other.
+
+::: {.callout-tip title="Intuition"}
+Think of $\hat{f}$ as a "prefix sum" over the subset lattice—it accumulates $f$ over all subsets of $S$. Möbius inversion is the lattice analogue of differencing: it peels off the contributions of proper subsets to recover the original value. The alternating signs play the same role as inclusion-exclusion in counting.
+:::
+
+### Worked example {#sec-mobius-example}
+
+Let $n = 2$ and $f(\emptyset) = 0$, $f(\{1\}) = 3$, $f(\{2\}) = 5$, $f(\{1,2\}) = 1$.
+
+| $S$ | $\hat{f}(S)$ | computation |
+|-----|-------------|-------------|
+| $\emptyset$ | $f(\emptyset) = 0$ | one term |
+| $\{1\}$ | $f(\emptyset) + f(\{1\}) = 3$ | two terms |
+| $\{2\}$ | $f(\emptyset) + f(\{2\}) = 5$ | two terms |
+| $\{1,2\}$ | $f(\emptyset) + f(\{1\}) + f(\{2\}) + f(\{1,2\}) = 9$ | four terms |
+
+Now apply Möbius inversion to $\hat{f}$:
+
+$$
+\widetilde{\hat{f}}(\{1,2\}) = \hat{f}(\{1,2\}) - \hat{f}(\{1\}) - \hat{f}(\{2\}) + \hat{f}(\emptyset) = 9 - 3 - 5 + 0 = 1 = f(\{1,2\}). \;\checkmark
+$$
+
+The signs follow the pattern $(-1)^{|S|-|R|}$: subsets of size 2 get $+$, size 1 get $-$, size 0 get $+$.
+
+### The inversion theorem {#sec-inversion-theorem}
+
+**Theorem.** $\widetilde{\hat{f}} = \hat{\tilde{f}} = f$. That is, applying the Zeta transform then Möbius inversion (or vice versa) recovers the original function.
+
+*Proof sketch (one direction).* Evaluate $\widetilde{\hat{f}}(T)$:
+
+$$
+\widetilde{\hat{f}}(T) = \sum_{S \subseteq T} (-1)^{|T|-|S|}\,\hat{f}(S)
+= \sum_{S \subseteq T} (-1)^{|T|-|S|} \sum_{R \subseteq S} f(R)
+= \sum_{R \subseteq T} f(R) \underbrace{\sum_{\substack{S : R \subseteq S \subseteq T}} (-1)^{|T|-|S|}}_{\text{(\(\star\))}}.
+$$ {#eq-inversion-expand}
+
+The inner sum $(\star)$ equals $[R = T]$ by the inclusion-exclusion identity: summing $(-1)^{|T|-|S|}$ over all $S$ sandwiched between $R$ and $T$ yields $1$ when $R = T$ and $0$ otherwise. Therefore $\widetilde{\hat{f}}(T) = f(T)$.
+
+::: {.callout-note title="Why the inner sum vanishes"}
+When $R \subsetneq T$, the set $T \setminus R$ is non-empty with $k = |T| - |R| \ge 1$ elements. The sum factors as $\sum_{j=0}^{k} \binom{k}{j}(-1)^j = (1-1)^k = 0$ by the binomial theorem.
+:::
+
+## Application: $k$-colourability {#sec-k-color}
+
+### From colourings to independent sets
+
+A graph $G = (V, E)$ is $k$-colourable if and only if $V$ can be written as the union of $k$ non-empty independent sets (the colour classes). The sets need not be disjoint—any overlap can be resolved greedily by assigning each vertex to the first colour class that contains it.
+
+Why is overlap harmless? Suppose vertex $v$ appears in colour classes $C_1$ and $C_3$. Just keep $v$ in $C_1$ and remove it from $C_3$. After processing all vertices this way, the classes are disjoint and still independent (removing a vertex from an independent set keeps it independent). The $k$-colouring is valid.
+
+Define:
+
+- $f(S) = [S \text{ is a non-empty independent set in } G]$, the indicator function.
+- $g(S) = \text{number of ordered $k$-tuples of non-empty independent sets whose union is } S$.
+
+Then $G$ is $k$-colourable if and only if $g(V) > 0$.
+
+<!-- TikZ: a small graph on 5 vertices with edges, partitioned into 3 colour classes (independent sets) shown as dotted ovals, some vertices appearing in overlapping ovals to illustrate the greedy resolution -->
+
+### The key identity
+
+**Claim.** $\hat{g}(S) = \hat{f}(S)^k$.
+
+Both sides count the same thing: the number of ways to choose an ordered $k$-tuple of non-empty independent sets, all contained in $S$.
+
+- **Left-hand side.** By definition, $\hat{g}(S) = \sum_{R \subseteq S} g(R)$. The function $g(R)$ counts ordered tuples whose union is *exactly* $R$. Summing over all $R \subseteq S$ counts all tuples whose union is *contained in* $S$.
+- **Right-hand side.** $\hat{f}(S)$ counts the number of non-empty independent sets contained in $S$. Raising to the $k$-th power counts ordered $k$-tuples of such sets—choosing each of the $k$ slots independently.
+
+Both sides count the same objects, so they are equal.
+
+By Möbius inversion, the quantity we actually need is:
+
+$$
+g(V) = \widetilde{\hat{f}^k}(V) = \sum_{S \subseteq V} (-1)^{|V|-|S|}\,\hat{f}(S)^k.
+$$ {#eq-k-color}
+
+Check whether $g(V) > 0$ to decide $k$-colourability.
+
+::: {.callout-tip title="Where did this formula come from?"}
+The derivation is mechanical once you know the Zeta/Möbius framework. Start with the thing you want ($g$), express its Zeta transform in a computable form ($\hat{f}^k$), then Möbius-invert to recover $g$ itself. The framework does the bookkeeping; you just need to identify the right $f$.
+:::
+
+::: {.callout-important title="Finding a colouring, not just deciding"}
+Björklund and Husfeldt (FOCS '06) give a short black-box reduction: if you can compute the chromatic number in $O^*(2^n)$ time, you can also *find* a valid $k$-colouring in roughly the same time. The reduction is a few paragraphs and appears in their arXiv preprint. Crucially, it works for *any* algorithm that decides $k$-colourability—nothing specific to the inclusion-exclusion approach.
+:::
+
+## Computing the transforms efficiently {#sec-computing}
+
+### Brute force: $O^*(3^n)$ time, polynomial space
+
+Evaluate @eq-k-color directly. For each of the $2^n$ subsets $S$, compute $\hat{f}(S)$ by summing over all $R \subseteq S$—that costs $2^{|S|}$ time per set. The total running time is:
+
+$$
+\sum_{S \subseteq [n]} 2^{|S|} = \sum_{i=0}^{n} \binom{n}{i} 2^i = (1+2)^n = 3^n.
+$$
+
+The key step uses the binomial theorem: group subsets by size $i$, count $\binom{n}{i}$ of them, each contributing $2^i$ work.
+
+Since each $\hat{f}(S)$ feeds a running sum for $g(V)$ and can then be discarded, the space is polynomial—you only need to store the current $\hat{f}(S)$ value and the accumulator. This already improves on the standard dynamic-programming algorithm for $k$-colourability, which uses $O^*(3^n)$ time but also $O^*(2^n)$ space to tabulate subproblem solutions.
+
+### Yates' algorithm: $O(n \cdot 2^n)$ time, $O(n \cdot 2^n)$ space {#sec-yates}
+
+Define a family of partial Zeta transforms:
+
+$$
+G(i, S) = \sum_{\substack{R \subseteq S \\ S_{>i} = R_{>i}}} f(R),
+$$ {#eq-yates-def}
+
+where $S_{>i} = S \cap \{i+1, \ldots, n\}$ denotes the "upper" portion of $S$. The constraint $S_{>i} = R_{>i}$ means $R$ must agree with $S$ on coordinates above $i$ but is free on coordinates $1, \ldots, i$.
+
+**Base case.** $G(0, S) = f(S)$, because $S_{>0} = S$ forces $R = S$.
+
+**Goal.** $\hat{f}(S) = G(n, S)$, because $S_{>n} = \emptyset$ imposes no constraint.
+
+**Recurrence.**
+
+$$
+G(i, S) = \begin{cases}
+G(i-1, S) & \text{if } i \notin S, \\
+G(i-1, S) + G(i-1, S \setminus \{i\}) & \text{if } i \in S.
+\end{cases}
+$$ {#eq-yates-rec}
+
+<!-- TikZ: a table showing the memoisation grid with axes i (0..n) and S (subsets), arrows showing the recurrence dependencies from (i-1, S) and (i-1, S\{i}) to (i, S) -->
+
+**Proof of correctness (case $i \in S$).** Split the sum defining $G(i, S)$ according to whether $i \in R$:
+
+- *$i \in R$:* Both $R$ and $S$ contain $i$, so $S_{>i-1} = R_{>i-1}$ iff $S_{>i} = R_{>i}$. This sub-sum equals $G(i-1, S)$.
+- *$i \notin R$:* Now $R$ agrees with $S$ from $i+1$ onward but disagrees at $i$. That means $R$ agrees with $S \setminus \{i\}$ from $i$ onward. This sub-sum equals $G(i-1, S \setminus \{i\})$.
+
+**Complexity.** There are $n \cdot 2^n$ states $(i, S)$. Each state takes $O(1)$ time: look up at most two previously computed values, add them, and store the result. Total: $O(n \cdot 2^n)$ time and $O(n \cdot 2^n)$ space (or $O(2^n)$ space if you overwrite in place, sweeping through layers $i = 1, \ldots, n$).
+
+**Möbius inversion via Yates.** A nearly identical recurrence computes $\tilde{f}$. Change the $+$ to $-$ in the $i \in S$ case:
+
+$$
+G^{-}(i, S) = \begin{cases}
+G^{-}(i-1, S) & \text{if } i \notin S, \\
+G^{-}(i-1, S) - G^{-}(i-1, S \setminus \{i\}) & \text{if } i \in S.
+\end{cases}
+$$
+
+Everything else—base case, goal, complexity—is unchanged.
+
+::: {.callout-note title="Connection to the fast Fourier transform"}
+Yates' algorithm has the same "butterfly" structure as the FFT. Both decompose a sum over a group (here $\mathbf{Z}_2^n$) by peeling off one coordinate at a time. The Zeta transform over the subset lattice is precisely the Fourier transform over the Boolean group. If you have seen the Cooley–Tukey FFT, the recurrence above will feel familiar: double the "resolved" dimensions at each step, combining two half-size sub-problems with an additive operation.
+:::
+
+### Summary of running times for $k$-colourability
+
+| Approach | Time | Space | Reference |
+|----------|------|-------|-----------|
+| Dynamic programming | $O^*(3^n)$ | $O^*(2^n)$ | folklore |
+| Inclusion-exclusion (brute force) | $O^*(3^n)$ | $\operatorname{poly}(n)$ | — |
+| Inclusion-exclusion + Yates | $O^*(2^n)$ | $O^*(2^n)$ | Björklund–Husfeldt; Koivisto (FOCS '06) |
+| $O^*(2^{0.2461n})$ time, poly space | $O^*(2^{0.2461n})$ | $\operatorname{poly}(n)$ | Björklund–Husfeldt (FOCS '06) |
+
+: Running times for deciding $k$-colourability. {#tbl-kcolor}
+
+::: {.callout-warning title="Open problem"}
+Is there an algorithm achieving $O^*(2^n)$ time with only $\operatorname{poly}(n)$ space? The best known polynomial-space algorithm runs in $O^*(2^{0.2461n})$, still far from $2^n$.
+:::
+
+## The streaming model {#sec-streaming}
+
+### Setup
+
+You have a high-dimensional vector $x \in \mathbf{R}^n$ that starts as the zero vector. A stream of updates arrives one at a time; each update is a pair $(i, v)$ that increments $x_i$ by $v$. Between updates, you must answer queries about $x$—but you cannot afford to store all of $x$ or remember the entire stream.
+
+<!-- TikZ: a horizontal arrow labelled "stream" with update boxes (i_1, v_1), (i_2, v_2), ... feeding into a box labelled "algorithm A" with a small memory bank, and a query arrow coming out -->
+
+This is the **turnstile model** (Muthukrishnan, ~2005): updates can be positive or negative, modelling both insertions and deletions.
+
+**Motivating example.** Let $n = 2^{128}$ (IPv6 addresses). A router sees packets and wants to track statistics about the destination distribution $x$. Storing $x$ explicitly requires $2^{128}$ counters—impossible. Remembering every packet requires space proportional to the stream length $m$—also impractical when $m$ is billions.
+
+The trivial solutions always exist: store all of $x$ in $O(n)$ space, or record the entire stream in $O(m \log n)$ space (each stream element is an index taking $\log n$ bits). The goal of streaming algorithms is to beat both bounds drastically.
+
+::: {.callout-tip title="Intuition"}
+A streaming algorithm is a data structure with a brutal space constraint: its memory must be far smaller than either the vector dimension $n$ or the stream length $m$. Updates arrive one at a time, and there is no going back—you process each update, possibly discard some information, and move on. The surprise is that useful queries can still be answered accurately despite this irreversible compression.
+:::
+
+### The distinct-elements problem ($F_0$) {#sec-f0}
+
+Restrict to the *insertion-only* model: every update has $v = 1$. The query is $F_0(x) = |\{i : x_i > 0\}|$—the number of distinct elements seen so far.
+
+The trivial solutions use $n$ bits (a bitmap) or $m \log n$ bits (store every stream element). Can you do better?
+
+### A linear lower bound for deterministic algorithms {#sec-lb}
+
+**Theorem** (Alon–Matias–Szegedy, 1996/99). Any deterministic algorithm for $F_0$ requires $\Omega(\min(n, m))$ bits of space.
+
+*Proof.* Via an encoding argument. The strategy: if a space-$s$ streaming algorithm existed, you could use it to losslessly compress *any* $n$-bit string into $s$ bits. But lossless compression of $n$-bit strings into fewer than $n$ bits is impossible by pigeonhole (there are $2^n$ strings but only $2^s < 2^n$ possible compressed forms). So $s \ge n$.
+
+<!-- TikZ: Alice-Bob communication diagram: Alice holds x ∈ {0,1}^n, creates a stream, runs algorithm A, sends s-bit memory state to Bob, who reconstructs x by probing A with additional stream elements -->
+
+**Encoding (Alice).** Given $x \in \{0,1\}^n$, Alice creates a stream containing exactly the set $\{i : x_i = 1\}$, runs $\mathcal{A}$ on this stream, and transmits the $s$-bit memory state of $\mathcal{A}$ to Bob. This is the "compression" of $x$.
+
+**Decoding (Bob).** Bob receives the $s$-bit memory state and reconstructs $x$ bit by bit. He initialises $z = \mathcal{A}.\text{query}()$—the current support size. Then, for each $i = 1, \ldots, n$:
+
+1. Feed update $(i, 1)$ into $\mathcal{A}$ (inserting element $i$).
+2. Query $\mathcal{A}$ for the new support size $z'$.
+3. If $z' = z$: element $i$ was already present, so $x_i = 1$.
+4. If $z' = z + 1$: element $i$ is new, so $x_i = 0$.
+5. Set $z \leftarrow z'$ and continue.
+
+After $n$ steps, Bob has recovered all bits of $x$.
+
+**Why this is an injection.** Different $n$-bit strings $x \ne x'$ produce different streams, hence different memory states (since Bob can uniquely decode from the state). So the map $x \mapsto \text{memory state}$ is an injection from $\{0,1\}^n$ to $\{0,1\}^s$, forcing $s \ge n$. In this construction $m \le n$ (the stream has at most $n$ elements), so $s = \Omega(\min(n, m))$.
+
+::: {.callout-important title="What's actually impossible?"}
+The encoding argument also rules out **deterministic approximate** and **randomized exact** algorithms. Both can still be turned into compression schemes. Only the combination of randomization *and* approximation breaks the barrier.
+:::
+
+### The Flajolet–Martin algorithm (idealized) {#sec-fm}
+
+**Goal.** A randomized algorithm $\mathcal{A}$ such that for all streams $S$:
+
+$$
+\Pr\bigl[|\mathcal{A}(S) - F_0| > \varepsilon \cdot F_0\bigr] \le \frac{1}{3}.
+$$
+
+**Idealized version.** Pick a totally random hash function $h : [n] \to [0,1]$ (each element gets an independent, uniformly distributed value in the unit interval). As the stream arrives, maintain a single number:
+
+$$
+z = \min_{i \in \text{stream}} h(i).
+$$
+
+When asked for $F_0$, output $1/z - 1$.
+
+The algorithm uses just *one register* of memory (ignoring the hash function itself). Every time a stream element $i$ arrives, compute $h(i)$ and update $z \leftarrow \min(z, h(i))$. That is the entire algorithm.
+
+**Why this works.** Imagine scattering $F_0$ points uniformly at random onto the interval $[0,1]$. In expectation, they divide the interval into $F_0 + 1$ roughly equal segments, each of length $\approx 1/(F_0 + 1)$. The smallest point—the minimum hash value—sits at the left end of the first segment, so $z \approx 1/(F_0 + 1)$, and $1/z - 1 \approx F_0$.
+
+<!-- TikZ: a number line from 0 to 1 with F_0 = 5 hash values marked as dots uniformly spaced, the minimum labelled z ≈ 1/(F_0+1), and gap sizes annotated as ≈ 1/6 -->
+
+**Formally.** Use the tail-sum formula for non-negative random variables:
+
+$$
+\mathbf{E}[z] = \int_0^1 \Pr[z > t]\,dt.
+$$ {#eq-ez-tail}
+
+The event $z > t$ means every hash value exceeds $t$. Since the $F_0$ distinct items have independent hash values, each exceeding $t$ with probability $1-t$:
+
+$$
+\Pr[z > t] = (1-t)^{F_0}.
+$$
+
+Integrating:
+
+$$
+\mathbf{E}[z] = \int_0^1 (1-t)^{F_0}\,dt = \frac{1}{F_0 + 1}.
+$$ {#eq-ez}
+
+Similarly, $\mathbf{E}[z^2] = \int_0^1 2t(1-t)^{F_0}\,dt = 2/\bigl((F_0+1)(F_0+2)\bigr)$, giving:
+
+$$
+\operatorname{Var}(z) = \mathbf{E}[z^2] - (\mathbf{E}[z])^2 = \frac{F_0}{(F_0+1)^2(F_0+2)} = O\!\left(\frac{1}{F_0^2}\right).
+$$
+
+By Chebyshev's inequality, $z$ concentrates around $1/(F_0+1)$, so $1/z - 1$ gives a constant-factor estimate of $F_0$ with constant probability. But a single copy has high variance—the estimate might be off by a factor of 2 or more. To reduce variance to $(1+\varepsilon)$ accuracy:
+
+**Averaged version.** Pick $R = \Theta(1/\varepsilon^2)$ independent hash functions $h_1, \ldots, h_R$. Maintain $z_j = \min_{i \in \text{stream}} h_j(i)$ for each $j$. Output $1/\bar{z} - 1$ where $\bar{z} = \frac{1}{R}\sum_j z_j$.
+
+Each $z_j$ has the same expectation $1/(F_0+1)$, so $\bar{z}$ has the same expectation. But the variance of $\bar{z}$ is $\operatorname{Var}(z)/R$—averaging $R$ independent copies reduces variance by a factor of $R$. Setting $R = \Theta(1/\varepsilon^2)$ makes the relative standard deviation of $\bar{z}$ drop to $O(\varepsilon)$, which is just enough for a $(1+\varepsilon)$-approximation via the Chebyshev bound:
+
+$$
+\Pr\bigl[|z - \mathbf{E}[z]| > \varepsilon \cdot \mathbf{E}[z]\bigr] \le \frac{\operatorname{Var}(z)}{\varepsilon^2 (\mathbf{E}[z])^2}.
+$$
+
+The ratio $\operatorname{Var}(z)/(\mathbf{E}[z])^2$ is $O(1/F_0)$ for a single copy—already small when $F_0$ is large—but the $R$-copy average makes it $O(1/(R \cdot F_0))$, controllable for any desired $\varepsilon$.
+
+::: {.callout-warning title="Two idealizations to fix"}
+1. **Storing the hash function.** A truly random $h$ requires $n$ random values—$\Omega(n)$ space. Fix: use a $k$-wise independent hash family (covered earlier in the course), storable in $O(k \log n)$ bits.
+2. **Continuous range.** Real numbers have infinite precision. Fix: discretize $[0,1]$ into fractions with denominators $\operatorname{poly}(n)$; $O(\log n)$ bits per hash value suffice.
+:::
+
+### What's possible and what isn't
+
+| | Exact | Approximate |
+|---|---|---|
+| **Deterministic** | Impossible ($\Omega(n)$ bits) | Impossible |
+| **Randomized** | Impossible | **Possible** (Flajolet–Martin, JCSS '85) |
+
+: Landscape of distinct-elements algorithms. All "impossible" results are due to Alon–Matias–Szegedy. {#tbl-f0}
+
+Failure probability $\delta$ can be driven arbitrarily small at the cost of a $\log(1/\delta)$ factor in space.
+
+::: {.callout-note title="Las Vegas vs. Monte Carlo"}
+**Las Vegas**: always correct, running time is expected (like randomised quicksort). **Monte Carlo**: always efficient, correctness is probabilistic (like Flajolet–Martin). The streaming lower bounds kill even Las Vegas algorithms for $F_0$—you need Monte Carlo.
+:::
+
+## Cheat sheet
+
+::: {.callout-important title="Cheat sheet — Lecture 25"}
+
+**Zeta transform / Möbius inversion**
+
+- $\hat{f}(S) = \sum_{R \subseteq S} f(R)$ and $\tilde{f}(S) = \sum_{R \subseteq S}(-1)^{|S|-|R|}f(R)$.
+- $\widetilde{\hat{f}} = \hat{\tilde{f}} = f$ (the two are mutual inverses).
+
+**$k$-colourability via inclusion-exclusion**
+
+- $f(S) = [S \text{ is a non-empty independent set}]$.
+- $G$ is $k$-colourable iff $\sum_{S \subseteq V}(-1)^{|V|-|S|}\hat{f}(S)^k > 0$.
+
+**Yates' algorithm**
+
+- Computes all $2^n$ values of $\hat{f}$ (or $\tilde{f}$) in $O(n \cdot 2^n)$ time and space.
+- Recurrence: $G(i, S) = G(i-1, S) + [i \in S] \cdot G(i-1, S \setminus \{i\})$.
+
+**Streaming / distinct elements**
+
+- Turnstile model: updates $(i, v)$; goal is sublinear space.
+- Deterministic exact $F_0$: $\Omega(n)$ bits (encoding argument).
+- Flajolet–Martin: hash to $[0,1]$, track $z = \min h(i)$, output $1/z - 1$.
+- Space for $(1+\varepsilon)$-approximation: $O(1/\varepsilon^2)$ hash functions $\times$ $O(\log n)$ bits each.
+:::
+
+## FAQ — questions students actually asked
+
+**Q: In the $k$-colourability formula, the independent sets are ordered tuples. Doesn't that over-count?**
+A: The formula counts ordered tuples whose union covers $V$. If *any* such tuple exists, $g(V) > 0$, which is all we need for a decision problem. Over-counting ordered tuples doesn't affect the yes/no answer.
+
+**Q: Can you also *find* a $k$-colouring, not just decide if one exists?**
+A: Yes. Björklund and Husfeldt give a black-box reduction: if you can compute the chromatic number in $O^*(2^n)$ time, you can find the colouring in roughly the same time. It's a short argument (a few paragraphs in their paper).
+
+**Q: In the streaming lower bound, why can Bob decode? Doesn't inserting element $i$ when $x_i = 1$ change nothing?**
+A: Exactly—that's the point. If $x_i = 1$, element $i$ was already in the stream, so re-inserting it doesn't change $F_0$. If $x_i = 0$, element $i$ is new and $F_0$ increases by one. Bob detects the difference.
+
+**Q: What if I want to query a specific $x_i$ instead of the support size? Does the same lower bound apply?**
+A: Deterministic exact and randomized exact are still impossible. But a deterministic *approximate* algorithm exists for point queries: you can output $x_i \pm \varepsilon \|x\|_1$ in space $O(1/\varepsilon^2)$. Randomisation can improve this to $O(1/\varepsilon)$.
+
+**Q: Can you make the Flajolet–Martin failure probability $\delta$ instead of $1/3$?**
+A: Yes. Run $O(\log(1/\delta))$ independent copies and take the median. The probability that the median fails decays exponentially in the number of copies, by a Chernoff bound.
+
+## Further reading
+
+1. **A. Björklund, T. Husfeldt.** *Inclusion-exclusion algorithms for counting set partitions.* FOCS 2006. The source for $O^*(2^n)$-time $k$-colourability and the search-to-decision reduction.
+
+2. **A. Koivisto.** *An $O^*(2^n)$ algorithm for graph coloring and other partitioning problems via inclusion-exclusion.* FOCS 2006. Independent work arriving at the same result.
+
+3. **T. Husfeldt.** *Invitation to algorithmic uses of inclusion-exclusion.* ICALP 2011 (invited paper). A survey of further applications: Steiner tree, Hamiltonian path, chromatic polynomial, and more.
+
+4. **P. Flajolet, G.N. Martin.** *Probabilistic counting algorithms for data base applications.* JCSS 31(2), 1985. The original distinct-elements algorithm using hash-based minimum tracking.
+
+5. **N. Alon, Y. Matias, M. Szegedy.** *The space complexity of approximating the frequency moments.* JCSS 58(1), 1999 (conference version STOC '96). Lower bounds for $F_0$ and the AMS sketch for higher frequency moments.
+
+## Try it yourself
+
+1. **Möbius inversion by hand.** Let $n = 3$ and $f(S) = |S|$. Compute $\hat{f}(S)$ and $\tilde{f}(S)$ for all $S \subseteq \{1,2,3\}$. Verify that $\widetilde{\hat{f}} = f$.
+
+2. **Yates for Möbius inversion.** Modify the recurrence in @eq-yates-rec to compute Möbius inversion instead of the Zeta transform. (*Hint:* change one sign.)
+
+3. **Encoding argument for approximate $F_0$.** Extend the lower-bound proof in @sec-lb to show that any *deterministic* $(1+\varepsilon)$-approximate algorithm for $F_0$ also requires $\Omega(n)$ bits, for any constant $\varepsilon < 1$.
+
+4. **Implement Flajolet–Martin.** Write a Python function that estimates the number of distinct elements in a stream using the averaged Flajolet–Martin algorithm. Use a $k$-wise independent hash family (or Python's `random` module as a stand-in). Test on a stream of $10^5$ elements drawn from a universe of size $10^4$ with many repeats.
+
+```python
+import random
+import math
+
+def flajolet_martin(stream, R=100):
+    """Estimate the number of distinct elements in stream.
+
+    Args:
+        stream: iterable of hashable elements
+        R: number of independent hash functions (controls accuracy)
+
+    Returns:
+        Estimated number of distinct elements
+    """
+    # Use R independent random seeds to simulate independent hash functions
+    seeds = [random.randint(0, 2**64) for _ in range(R)]
+    z = [1.0] * R  # track minimum hash value for each function
+
+    for item in stream:
+        for j in range(R):
+            # Hash item to [0, 1) using seed j
+            random.seed(hash((item, seeds[j])))
+            h = random.random()
+            z[j] = min(z[j], h)
+
+    z_bar = sum(z) / R
+    if z_bar == 0:
+        return float('inf')
+    return 1.0 / z_bar - 1
+
+# Test
+random.seed(42)
+universe = range(10_000)
+true_distinct = 3_000
+elements = random.choices(list(universe)[:true_distinct], k=100_000)
+estimate = flajolet_martin(elements, R=200)
+print(f"True distinct: {true_distinct}")
+print(f"Estimated:     {estimate:.0f}")
+print(f"Relative error: {abs(estimate - true_distinct) / true_distinct:.2%}")
+```
+
+5. **Chromatic number search.** Using @eq-k-color, write a brute-force Python program that computes the chromatic number of a graph on $n \le 15$ vertices. Represent subsets as bitmasks. Compare with a backtracking colouring algorithm.

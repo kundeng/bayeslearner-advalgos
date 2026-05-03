@@ -1,0 +1,453 @@
+---
+title: "Strong Duality, Complementary Slackness, and the Ellipsoid Method"
+subtitle: "COMPSCI 224 Lecture 16 — Fall 2014"
+author: "Companion notes by Kun Deng"
+date: today
+abstract: |
+  Simplex termination via Bland's rule leads directly to a proof of strong
+  duality: the shadow price vector is dual-feasible at halt, collapsing the
+  duality gap to zero.  Complementary slackness sharpens this into a
+  coordinate-by-coordinate certificate of optimality.  The ellipsoid method—the
+  first polynomial-time LP algorithm—needs only a *separation oracle*, enabling
+  it to solve exponentially large programs.  A brief preview of interior point
+  methods sets the stage for Lecture 17.
+---
+
+## Why this lecture matters
+
+This lecture ties three threads together. Simplex terminates (via Bland's rule) and, as a corollary, proves strong duality—arguably the most important theorem in linear programming. Complementary slackness then gives a pointwise certificate that lets you verify optimality without re-solving the LP. The ellipsoid method shifts the computational model: you no longer need the constraint matrix written down, just an oracle that finds a violated constraint. That oracle-based view is what makes LP a tractable subroutine inside combinatorial optimisation.
+
+::: {.callout-tip title="30-second story"}
+1. Simplex moves vertex-to-vertex; Bland's rule prevents cycling in degenerate cases.
+2. The shadow price vector $y = (A_B^{-1})^\top c_B$ is dual-feasible exactly when Simplex halts, proving strong duality.
+3. Complementary slackness: for each coordinate, either the primal variable or the dual slack is zero.
+4. Simplex takes at most $\binom{n-\lfloor m/2\rfloor}{\lfloor m/2\rfloor}$ iterations (McMullen's upper bound theorem), but no polynomial pivoting rule is known.
+5. Santos (2012) disproved the Hirsch conjecture: polytope diameter can exceed $m - d$.
+6. The ellipsoid method solves LP in polynomial time using only a separation oracle.
+:::
+
+
+## Finishing Simplex: degeneracy and Bland's rule {#sec-bland}
+
+Recall the setup. The LP is
+
+$$
+\min\; c^\top x \quad\text{s.t.}\quad Ax = b,\; x \ge 0,
+$$ {#eq-lp}
+
+where $A$ is $m \times n$, $b \in \mathbb{R}^n$, and $c \in \mathbb{R}^n$. The polytope $P = \{x : Ax = b,\, x \ge 0\}$. A vertex $x \in P$ has the property that $A_{\mathcal{B}'(x)}$—the submatrix of columns indexed by $\mathcal{B}'(x) = \{j : x_j > 0\}$—has full column rank.
+
+At each step Simplex maintains a **basis** $\mathcal{B} \subseteq \{1,\dots,n\}$ with $|\mathcal{B}| = m$ and $A_\mathcal{B}$ invertible. Writing $\mathcal{N} = \{1,\dots,n\} \setminus \mathcal{B}$ for the non-basic indices, we substitute $x_\mathcal{B} = A_\mathcal{B}^{-1}(b - A_\mathcal{N} x_\mathcal{N})$ into the objective and obtain the **reduced cost**
+
+$$
+\tilde{c}_\mathcal{N} = c_\mathcal{N} - A_\mathcal{N}^\top (A_\mathcal{B}^{-1})^\top c_\mathcal{B}.
+$$ {#eq-reduced-cost}
+
+### Rewriting the LP in terms of the basis
+
+The substitution $x_\mathcal{B} = A_\mathcal{B}^{-1}(b - A_\mathcal{N} x_\mathcal{N})$ lets you rewrite the objective entirely in terms of the non-basic variables. The constant term $c_\mathcal{B}^\top A_\mathcal{B}^{-1} b$ is the objective value at the current vertex (where $x_\mathcal{N} = 0$). The reduced cost $\tilde{c}_\mathcal{N}$ tells you the rate at which the objective changes if you start increasing any non-basic variable away from zero.
+
+Think of it this way: you are sitting at a vertex. Each non-basic variable is a door you could open. The reduced cost of that variable tells you whether walking through that door improves or worsens the objective.
+
+### The non-degenerate case
+
+If $v_\mathcal{B} > 0$ (every basic variable is strictly positive), the rule is clean:
+
+- **Negative reduced cost exists** ($\tilde{c}_j < 0$ for some $j \in \mathcal{N}$): pick such a $j$ and increment $v_j$. As $v_j$ increases from zero, the basic variables $v_\mathcal{B}$ adjust according to $v_\mathcal{B} = A_\mathcal{B}^{-1} b - A_\mathcal{B}^{-1} A_{\cdot j} v_j$. Some of them decrease. Keep going until the first basic variable hits zero—that's your new vertex. The entering variable $j$ joins the basis; the variable that hit zero leaves.
+- **All reduced costs non-negative** ($\tilde{c}_\mathcal{N} \ge 0$): halt and declare optimality. At the current vertex $x_\mathcal{N} = 0$, and since $x_\mathcal{N} \ge 0$ throughout the polytope, any feasible movement can only increase the objective (the reduced costs are non-negative). The current vertex is optimal.
+
+The increment is guaranteed to be positive because all basic variables started strictly positive and move continuously.
+
+### The degenerate case
+
+When some $v_j = 0$ for $j \in \mathcal{B}$, incrementing a non-basic variable with negative reduced cost may produce zero progress: a basic variable is already at zero, so the step length is zero. Naïve pivoting rules can cycle forever.
+
+<!-- TikZ: small 2D polytope with a degenerate vertex (three constraints meeting at one point), arrows showing a cycling pivot sequence -->
+
+::: {.callout-warning title="Cycling is real"}
+Without a careful pivoting rule, Simplex can revisit the same sequence of bases indefinitely. The Beale cycling example (1955) is a classic 6-variable, 3-constraint LP that cycles under the largest-coefficient rule.
+:::
+
+**Bland's rule** resolves this. Given multiple choices:
+
+1. **Entering variable $j$:** among all $j \in \mathcal{N}$ with $\tilde{c}_j < 0$, pick the one with the smallest index.
+2. **Leaving variable $k$:** compute $b' = A_\mathcal{B}^{-1} b$, $a' = A_\mathcal{B}^{-1} A_{\cdot j}$, and $q_i = b'_i / a'_{ij}$ for all $i$ with $a'_{ij} > 0$. Among those minimising $q_i$, pick the smallest index.
+
+Bland's rule is provably anti-cycling—Simplex terminates in finitely many steps.
+
+
+## Strong duality via Simplex {#sec-strong-duality}
+
+### The shadow price vector
+
+Define the **shadow price vector**
+
+$$
+y = (A_\mathcal{B}^{-1})^\top c_\mathcal{B}.
+$$ {#eq-shadow-price}
+
+This vector changes as the basis changes during Simplex. At the current vertex $v$:
+
+**Claim.** $c^\top v = b^\top y$.
+
+*Proof.* Since $A_\mathcal{B} v_\mathcal{B} = b$, we have $v_\mathcal{B} = A_\mathcal{B}^{-1} b$. Then $c^\top v = c_\mathcal{B}^\top v_\mathcal{B} = c_\mathcal{B}^\top A_\mathcal{B}^{-1} b = (A_\mathcal{B}^{-1})^\top c_\mathcal{B})^\top b = y^\top b = b^\top y$. $\square$
+
+This already looks like strong duality—primal cost equals dual cost—except we need $y$ to be dual-feasible. The claim says that at *every* intermediate vertex, the primal objective equals $b^\top y$. But $y$ is not necessarily dual-feasible during the algorithm—it becomes feasible only at termination.
+
+### Dual feasibility at termination
+
+The dual of @eq-lp is
+
+$$
+\max\; b^\top y \quad\text{s.t.}\quad A^\top y \le c \quad (y \text{ unrestricted}).
+$$ {#eq-dual}
+
+Define the **dual slack** $r = c - A^\top y$. By the definition of $y$:
+
+- $r_\mathcal{B} = 0$ (direct computation).
+- $r_\mathcal{N} = \tilde{c}_\mathcal{N}$ (the reduced cost).
+
+Simplex halts when $\tilde{c}_\mathcal{N} \ge 0$, which is exactly $r \ge 0$—dual feasibility. At that moment both primal and dual are feasible with equal objective values, so strong duality holds.
+
+::: {.callout-important title="Strong duality (LP)"}
+If the primal LP has an optimal solution, so does the dual, and $\min c^\top x = \max b^\top y$.
+:::
+
+
+## Complementary slackness {#sec-complementary-slackness}
+
+The **complementarity gap** is
+
+$$
+x^\top r = x^\top(c - A^\top y) = c^\top x - (Ax)^\top y = c^\top x - b^\top y.
+$$ {#eq-comp-gap}
+
+At optimality strong duality gives $c^\top x^* = b^\top y^*$, so $(x^*)^\top r^* = 0$. Each term $x_i^* r_i^*$ is non-negative (both $x^*$ and $r^*$ are componentwise non-negative). For non-negative terms to sum to zero, every term must be zero.
+
+::: {.callout-important title="Complementary slackness"}
+If $x^*$ and $y^*$ are optimal for the primal and dual respectively, then for every coordinate $i$:
+$$
+x_i^* = 0 \quad\text{or}\quad (c - A^\top y^*)_i = 0.
+$$
+:::
+
+<!-- TikZ: small table with columns x_i, r_i = (c - A^T y)_i, and product x_i r_i, showing which must be zero -->
+
+### Why complementary slackness matters
+
+Complementary slackness is the workhorse behind certifying optimality. Given a candidate primal solution $x$ and dual solution $y$, you don't need to re-solve the LP to check whether they're optimal—just verify that $x_i (c - A^\top y)_i = 0$ for every $i$. If it holds and both are feasible, they're optimal. Period.
+
+Earlier in the course, when analysing online algorithms, the lecturer used **approximate complementary slackness**: if each product $x_i r_i$ is bounded by some factor of the optimum rather than being exactly zero, you can extract a competitive-ratio bound. The online primal-dual framework systematises this into a recipe for designing competitive online algorithms.
+
+::: {.callout-tip title="Complementary slackness as economic intuition"}
+Think of $x_i$ as the quantity of resource $i$ used and $r_i$ as the "surplus price" (how much cheaper the resource is than its shadow price). If a resource has positive surplus price ($r_i > 0$), no rational agent uses it ($x_i = 0$). If a resource is actively used ($x_i > 0$), it must be priced at exactly its shadow value ($r_i = 0$). At optimality, there is no waste: every resource is either unused or priced at cost.
+:::
+
+
+## Simplex runtime and polytope diameter {#sec-simplex-runtime}
+
+### Iteration count
+
+Each Simplex pivot takes polynomial time. The number of pivots is at most the number of vertices. A vertex corresponds to a choice of $m$ columns from $n$, so the crude bound is $\binom{n}{m}$. Not every choice yields a feasible vertex (the solution $A_\mathcal{B}^{-1} b$ may have negative entries), so the true bound is tighter.
+
+::: {.callout-note title="McMullen's upper bound theorem (1970)"}
+The maximum number of vertices of a polytope defined by $n$ inequalities in $m$ dimensions is
+$$
+\binom{n - \lfloor m/2 \rfloor}{\lfloor m/2 \rfloor}.
+$$
+This is still exponential, but strictly better than $\binom{n}{m}$.
+:::
+
+### The Hirsch conjecture
+
+A **necessary** condition for any polynomial Simplex implementation is a polynomial bound on the **graph diameter** of the polytope (vertices connected when their bases differ by one constraint).
+
+The **Hirsch conjecture** (1957): every polytope in $d$ dimensions defined by $m$ hyperplanes has graph diameter at most $m - d$.
+
+In 2012, Santos exhibited a counterexample with $d = 43$, $m = 86$, and diameter at least 44. He further showed that for fixed $d$ and any $\varepsilon > 0$, there exist infinite families of polytopes with diameter at least $(1 + \varepsilon)m$.
+
+<!-- TikZ: cartoon polytope graph (abstract graph with ~8 nodes) annotated with "diameter ≥ m−d+1", showing Santos' counterexample idea -->
+
+These lower bounds are far from ruling out polynomial diameter ($m^{10} d^5$ would suffice), so a polynomial Simplex remains possible—just unproven.
+
+::: {.callout-note title="Open problem landscape"}
+Three questions remain open, in decreasing order of ambition:
+
+1. Is there a polynomial pivoting rule for Simplex? (No candidate is known.)
+2. Is the diameter of every polytope polynomial in $m$ and $d$? (The polynomial Hirsch conjecture—still wide open.)
+3. Is there *any* strongly polynomial algorithm for LP? (One of Smale's "problems for the 21st century.")
+
+The disproof of the Hirsch conjecture rules out the sharpest possible diameter bound but leaves plenty of room for weaker polynomial bounds.
+:::
+
+### Smooth analysis
+
+Spielman and Teng (2004) offered a theoretical explanation for Simplex's practical speed via **smoothed analysis**.
+
+The model: an adversary picks a worst-case LP instance. Each entry is then perturbed by independent Gaussian noise with mean zero and variance $\sigma^2$. The expected running time over the noise is polynomial in $n$, $m$, and $1/\sigma$ under the shadow-vertex pivot rule.
+
+Formally: there exists a pivot rule such that for all inputs $x$,
+
+$$
+\mathbb{E}_{\tilde{x}}[\text{runtime}(A, \tilde{x})] = \text{poly}(n, m, 1/\sigma),
+$$
+
+where $\tilde{x}$ is a randomly perturbed version of $x$. The quantifiers matter: the adversary picks the worst-case input *first*, then the noise is applied. If the expected running time is polynomial for *every* adversarial choice, the algorithm has polynomial smoothed complexity.
+
+The intuition is that pathological LP instances—like the Klee–Minty cube, which forces Simplex through $2^n$ vertices—are *fragile*. They rely on precise coordinate alignments that vanish under the slightest perturbation. Smoothed analysis captures this: the probability that a random perturbation preserves the pathological structure is negligible.
+
+::: {.callout-tip title="Smooth analysis in one sentence"}
+Smoothed analysis interpolates between worst-case and average-case: perturb every worst-case input by tiny random noise and bound the expected runtime. It explains why pathological inputs are fragile—small perturbations destroy them.
+:::
+
+
+## The ellipsoid method {#sec-ellipsoid}
+
+### From Simplex to polynomial time
+
+Simplex (Dantzig, 1947) has no known polynomial pivot rule. The **ellipsoid method** (Khachiyan, 1979) was the first provably polynomial algorithm for LP. It is rarely used in practice (it is slow compared to Simplex and interior point), but its oracle-based structure makes it uniquely powerful in theory.
+
+### Ellipsoids
+
+An **ellipsoid** is
+
+$$
+E(a, \mathcal{A}) = \{x : (x - a)^\top \mathcal{A}^{-1}(x - a) \le 1\},
+$$ {#eq-ellipsoid}
+
+where $a \in \mathbb{R}^n$ is the centre and $\mathcal{A} \succ 0$ is a positive-definite shape matrix. A sphere is the special case $\mathcal{A} = r^2 I$.
+
+### The algorithm
+
+The ellipsoid method tests feasibility of $P = \{x : Ax \ge b\}$:
+
+1. **Initialise** with an ellipsoid $E_0$ guaranteed to contain $P$ (radius derived from bit complexity $L$).
+2. **While** the centre $a$ of the current ellipsoid is not in $P$:
+   a. A **separation oracle** returns a hyperplane $H$ separating $a$ from $P$.
+   b. Replace the current ellipsoid with a smaller ellipsoid $E'$ that still contains the half of $E$ on $P$'s side of $H$.
+
+<!-- TikZ: ellipsoid with centre a, hyperplane H cutting through it, shaded half containing P, new smaller ellipsoid E' inscribing the shaded half -->
+
+3. **Terminate** when either $a \in P$ (feasible point found) or the volume of $E$ has shrunk below a threshold (declare $P$ empty).
+
+The key volume-shrinkage guarantee:
+
+$$
+\frac{\text{vol}(E')}{\text{vol}(E)} \le e^{-1/(2n)}.
+$$ {#eq-volume-shrink}
+
+After $k$ iterations, $\text{vol}(E_k) \le \text{vol}(E_0) \cdot e^{-k/(2n)}$. Comparing with the minimum volume of a non-empty polytope (exponentially small in $L$) gives a polynomial iteration bound of $O(n^2 L)$.
+
+::: {.callout-note title="Aside (mine, not the lecturer's)"}
+The ellipsoid method also works for general **convex programming**: any closed convex set with a polynomial-time separation oracle can be optimised over. This follows from the supporting hyperplane theorem (Hahn–Banach).
+:::
+
+### Handling precision issues
+
+If $P$ has equality constraints, its volume in the ambient space is zero—the algorithm would declare it empty immediately. The standard fix: inflate $P$ slightly to
+
+$$
+P' = \{x : Ax \le b + 2^{-L}\mathbf{1},\; -2^L \le x_j \le 2^L\; \forall\, j\},
+$$
+
+where $L$ is the bit complexity. Then $P$ is infeasible if and only if $P'$ is infeasible, and $P'$ has volume bounded away from zero.
+
+### From feasibility to optimisation
+
+The ellipsoid method solves feasibility, not optimisation directly. But optimisation reduces to feasibility in three steps:
+
+**Step 1.** Check that $P = \{x : Ax = b,\, x \ge 0\}$ is feasible by running the ellipsoid method on $P$. If infeasible, stop.
+
+**Step 2.** Check that the dual $\{y : A^\top y \le c\}$ is feasible. If not, the primal is unbounded—there is no finite minimum.
+
+**Step 3.** After steps 1 and 2, strong duality guarantees that the set
+$$
+\{(x, y) : Ax = b,\, x \ge 0,\, A^\top y \le c,\, c^\top x = b^\top y\}
+$$
+is non-empty. Run the ellipsoid method on this joint system. Any feasible $(x, y)$ in this set is simultaneously primal-optimal and dual-optimal.
+
+The key insight: the constraint $c^\top x = b^\top y$ (a single equation) encodes optimality via strong duality. You don't need to optimise—you just need to find a point that is primal-feasible, dual-feasible, and has zero duality gap.
+
+### The oracle perspective
+
+The ellipsoid method's real power: it never explicitly reads the constraint matrix. It only calls the separation oracle. For problems with exponentially many constraints but a polynomial-time separation oracle, the ellipsoid method solves the LP in polynomial time.
+
+```python
+# Conceptual sketch: ellipsoid method with a separation oracle
+import numpy as np
+
+def ellipsoid_feasibility(oracle, n, max_iter):
+    """
+    oracle(x) -> (feasible: bool, hyperplane: (a, b))
+        If x is infeasible, returns a violated constraint a^T x >= b.
+    """
+    # Start with a large sphere
+    centre = np.zeros(n)
+    shape = np.eye(n) * (2 ** 20)  # large initial ellipsoid
+
+    for k in range(max_iter):
+        feasible, constraint = oracle(centre)
+        if feasible:
+            return centre  # found a feasible point
+
+        a_vec, _ = constraint
+        # Update centre and shape (minimum-volume ellipsoid containing the half)
+        denom = np.sqrt(a_vec @ shape @ a_vec)
+        centre = centre - (1 / (n + 1)) * (shape @ a_vec) / denom
+        shape = (n**2 / (n**2 - 1)) * (
+            shape - (2 / (n + 1)) * np.outer(shape @ a_vec, shape @ a_vec)
+            / (a_vec @ shape @ a_vec)
+        )
+
+    return None  # likely infeasible
+```
+
+::: {.callout-warning title="Not for production"}
+The ellipsoid method is $O(n^4 L)$ per iteration (matrix updates). In practice, Simplex and interior point methods are orders of magnitude faster. The ellipsoid method's value is theoretical: it proves LP is in P and handles exponentially many constraints.
+:::
+
+
+## Interior point methods: a preview {#sec-ipm-preview}
+
+The **interior point method** (Karmarkar, *Combinatorica*, 1984) is the practical polynomial-time alternative to ellipsoid. Where Simplex walks along the polytope's edges, interior point stays *inside* the polytope and converges to an optimal vertex from the interior.
+
+### The barrier approach
+
+Convert the constrained LP $\min c^\top x$ subject to $Ax \ge b$ into an unconstrained problem:
+
+$$
+\min_{x \in \mathbb{R}^n}\; \lambda\, c^\top x - \sum_{i=1}^{m} \ln(a_i^\top x - b_i).
+$$ {#eq-barrier}
+
+The log barrier $p(s) = -\sum_i \ln s_i$ goes to $+\infty$ as any slack $s_i \to 0$, keeping the iterates in the interior.
+
+- **$\lambda = 0$:** the minimiser is the **analytic centre**—the point farthest from all constraints.
+- **$\lambda \to \infty$:** the minimiser approaches the optimal vertex.
+
+The **path-following** strategy: start with $\lambda_0$ very small (exponentially small in $L$), solve approximately, then incrementally increase $\lambda$. At each increment, use the previous approximate solution as a warm start for Newton's method.
+
+<!-- TikZ: 2D polytope with the central path drawn as a smooth curve from the analytic centre to the optimal vertex, with dots at lambda_0, lambda_1, lambda_2 along the path -->
+
+The iteration count is $O(\sqrt{m}\, L)$, each involving a constant number of $n \times n$ linear system solves. Details in Lecture 17.
+
+
+## Cheat sheet
+
+::: {.callout-important title="Lecture 16 — key results"}
+
+**Simplex termination**
+
+- Bland's rule (smallest-index pivot) guarantees finite termination, even with degenerate vertices.
+- Vertex bound: $\binom{n - \lfloor m/2\rfloor}{\lfloor m/2\rfloor}$ (McMullen).
+- No polynomial pivoting rule is known. Hirsch conjecture (diameter $\le m - d$) is false (Santos, 2012).
+- Smoothed analysis (Spielman–Teng): polynomial expected time under small random perturbations.
+
+**Strong duality**
+
+- Shadow price: $y = (A_\mathcal{B}^{-1})^\top c_\mathcal{B}$.
+- At any vertex: $c^\top v = b^\top y$.
+- At termination: reduced cost $\tilde{c}_\mathcal{N} \ge 0 \Rightarrow$ dual feasibility $\Rightarrow$ strong duality.
+
+**Complementary slackness**
+
+- $x_i^* = 0$ or $(c - A^\top y^*)_i = 0$ for every $i$.
+- Proof: $\sum x_i r_i = 0$ with all terms non-negative.
+
+**Ellipsoid method**
+
+- First poly-time LP algorithm (Khachiyan, 1979).
+- Needs only a separation oracle, not the explicit constraint matrix.
+- Volume shrinks by factor $e^{-1/(2n)}$ per step; $O(n^2 L)$ iterations.
+- Handles exponentially many constraints (if oracle is efficient).
+
+**Interior point (preview)**
+
+- Log barrier converts constrained LP to unconstrained optimisation.
+- Path-following: track the central path from analytic centre to optimal vertex.
+- $O(\sqrt{m}\, L)$ iterations, each a linear system solve.
+:::
+
+
+## FAQ — questions students actually asked {#sec-faq}
+
+**Q: How do you check that $A$ has full row rank in practice?**
+You can add constraints one by one: if adding a row doesn't increase the rank, drop it (it's redundant). Computing rank can be done in input-sparsity time (proportional to the number of non-zero entries times polylog factors). Theoretically, you could also compute $\det(A^\top A)$ and check it is non-zero.
+
+**Q: In the polytope graph, when are two vertices adjacent?**
+Two vertices share an edge when their bases differ by exactly one constraint—swap one column in, one column out.
+
+**Q: Is the number of iterations for interior point at least $L$?**
+Yes. Even the best known interior point methods need $\Omega(L)$ iterations. The best bound before 2014 was $O(\sqrt{m}\, L)$ per Renegar (1988). Lee and Sidford (2014) improved the $\sqrt{m}$ to $\sqrt{\text{rank}(A)}$.
+
+**Q: Are there strongly polynomial LP algorithms?**
+No. Whether LP can be solved in time polynomial in $m$ and $n$ alone (independent of $L$) is a major open problem.
+
+**Q: Why is the Hirsch conjecture called "the" upper bound theorem?**
+McMullen's upper bound theorem (on the number of vertices) and the Hirsch conjecture (on diameter) are distinct results. The "upper bound theorem" specifically refers to McMullen's tight bound on the number of faces of a convex polytope. The Hirsch conjecture, now disproved, was about graph diameter.
+
+
+## Further reading {#sec-further-reading}
+
+1. **Santos, F.** "A counterexample to the Hirsch conjecture." *Annals of Mathematics* 176(1), 2012. The disproof, with an explicit $d = 43$, $m = 86$ polytope.
+2. **Spielman, D. and Teng, S.-H.** "Smoothed analysis of algorithms: why the simplex algorithm usually takes polynomial time." *Journal of the ACM* 51(3), 2004. The foundational smoothed-analysis paper.
+3. **Khachiyan, L.** "A polynomial algorithm in linear programming." *Doklady Akademii Nauk SSSR* 244(5), 1979. The original ellipsoid method for LP.
+4. **Grötschel, M., Lovász, L., and Schrijver, A.** *Geometric Algorithms and Combinatorial Optimization.* Springer, 1988. Definitive treatment of the ellipsoid method and its applications to combinatorial optimisation.
+5. **Karmarkar, N.** "A new polynomial-time algorithm for linear programming." *Combinatorica* 4(4), 1984. The interior point method that launched a field.
+
+
+## Try it yourself {#sec-exercises}
+
+1. **Complementary slackness by hand.** Solve the LP $\min 3x_1 + 2x_2$ subject to $x_1 + x_2 \ge 4$, $x_1 + 3x_2 \ge 6$, $x_1, x_2 \ge 0$. Write the dual, find optimal primal and dual solutions, and verify complementary slackness coordinate by coordinate.
+
+2. **Bland's rule trace.** Consider the LP with $A = \begin{pmatrix} 1 & 0 & 1 \\ 0 & 1 & 1 \end{pmatrix}$, $b = (1, 1)^\top$, $c = (-1, -1, 0)^\top$. Starting from basis $\{3\}$ extended to $\{1, 3\}$, trace two Simplex pivots using Bland's rule. At each step, write the reduced cost, the entering and leaving variables.
+
+3. **Ellipsoid volume decay.** How many iterations does the ellipsoid method need to shrink its volume by a factor of $10^{6}$ in $n = 100$ dimensions? Use the bound $\text{vol}(E_k)/\text{vol}(E_0) \le e^{-k/(2n)}$.
+
+4. **Smooth analysis intuition.** Explain informally why adding Gaussian noise $\mathcal{N}(0, \sigma^2)$ to every entry of an LP prevents the pathological behaviour that makes Simplex exponential (e.g., Klee–Minty cubes).
+
+5. **Implement the ellipsoid method.** Write a Python function that takes a list of linear constraints $a_i^\top x \ge b_i$ and uses the ellipsoid method to find a feasible point or declare infeasibility. Test it on a simple 2D polygon.
+
+```python
+import numpy as np
+
+def ellipsoid_2d(constraints, max_iter=500):
+    """
+    constraints: list of (a, b) where a is 2D vector, b is scalar
+                 representing a^T x >= b
+    Returns feasible point or None.
+    """
+    n = 2
+    centre = np.zeros(n)
+    P = np.eye(n) * 100.0  # initial ellipsoid shape
+
+    for _ in range(max_iter):
+        # Check feasibility
+        violated = None
+        for a, b in constraints:
+            if a @ centre < b:
+                violated = (a, b)
+                break
+
+        if violated is None:
+            return centre  # feasible
+
+        a_vec, _ = violated
+        # Ellipsoid update
+        Pa = P @ a_vec
+        denom = np.sqrt(a_vec @ Pa)
+        centre = centre - (1 / (n + 1)) * Pa / denom
+        P = (n**2 / (n**2 - 1)) * (
+            P - (2 / (n + 1)) * np.outer(Pa, Pa) / (a_vec @ Pa)
+        )
+
+    return None  # likely infeasible
+
+# Test: triangle x1 >= 0, x2 >= 0, x1 + x2 <= 3
+constraints = [
+    (np.array([1, 0]), 0.0),   # x1 >= 0
+    (np.array([0, 1]), 0.0),   # x2 >= 0
+    (np.array([-1, -1]), -3.0) # -x1 - x2 >= -3, i.e., x1 + x2 <= 3
+]
+point = ellipsoid_2d(constraints)
+print(f"Feasible point: {point}")
+```

@@ -1,0 +1,439 @@
+---
+title: "The Power of Random Signs"
+subtitle: "COMPSCI 224 Lecture 26 — Fall 2014"
+author: "Companion notes by Kun Deng"
+date: today
+abstract: |
+  A single idea—multiplying by a matrix of random $\pm 1$ entries—solves
+  four different problems: estimating $\ell_2$-norms in a stream, accelerating
+  least-squares regression, reducing dimensionality with the
+  Johnson–Lindenstrauss guarantee, and answering point queries over a
+  streaming vector. The AMS sketch (Alon–Matias–Szegedy) achieves
+  $O(1/\varepsilon^2 \cdot \log(1/\delta))$ space for $\ell_2$-norm estimation;
+  the Thorup–Zhang sparse variant cuts update time from $O(1/\varepsilon^2)$
+  to $O(1)$ per stream element. Applied to regression, random-sign sketching
+  replaces the $nd^2$ bottleneck of forming $A^\top A$ with $md^2$ where
+  $m = O(d^2/\varepsilon^2)$, yielding input-sparsity-time algorithms.
+---
+
+## Why this lecture matters
+
+Random sign matrices are the Swiss army knife of modern algorithm design. Pick an $m \times n$ matrix $\Pi$ with independent $\pm 1/\sqrt{m}$ entries, multiply your data by $\Pi$, and the result preserves geometric structure—norms, dot products, angles—up to $(1+\varepsilon)$ error. This lecture deploys that one idea four times, each application building on the last: streaming norm estimation, fast regression, dimensionality reduction, and point queries. The progression reveals a unifying principle: **compressing high-dimensional data by random projection loses almost nothing that matters**.
+
+::: {.callout-tip title="30-second story"}
+1. **AMS sketch:** store $y = \Pi x$ where $\Pi$ has random $\pm 1/\sqrt{m}$ entries. Then $\|y\|_2^2$ is an unbiased estimator of $\|x\|_2^2$ with variance $O(\|x\|_2^4 / m)$.
+2. Set $m = O(1/\varepsilon^2)$ rows, repeat $O(\log(1/\delta))$ times, take the **median** → $(1\pm\varepsilon)$-approximation with probability $1-\delta$.
+3. **Thorup–Zhang** sparse sketch: one non-zero per column → $O(\log(1/\delta))$ update time instead of $O(1/\varepsilon^2 \cdot \log(1/\delta))$.
+4. **Subspace embedding** for regression: $\Pi$ preserves all norms in a $d$-dimensional subspace simultaneously when $m = O(d^2/\varepsilon^2)$, reducing regression from $nd^2$ to $\operatorname{nnz}(A) + \operatorname{poly}(d/\varepsilon)$ time.
+5. **Johnson–Lindenstrauss:** $m = O(\varepsilon^{-2}\log N)$ rows suffice to preserve all $\binom{N}{2}$ pairwise distances among $N$ points.
+6. **Point query:** JL applied to the $n$ standard basis vectors gives a streaming point-query sketch with $O(\varepsilon^{-2}\log n)$ space.
+:::
+
+## $\ell_2$-norm estimation via linear sketching {#sec-l2}
+
+### The problem
+
+You maintain a vector $x \in \mathbf{R}^n$ under turnstile updates: each update $(i, v)$ sets $x_i \leftarrow x_i + v$, where $v$ can be positive or negative. The query is $\|x\|_2^2 = \sum_i x_i^2$, and you want a $(1+\varepsilon)$-approximation using space much smaller than $n$.
+
+::: {.callout-warning title="Why the distinct-elements approach fails here"}
+The Flajolet–Martin algorithm from Lecture 25 tracked $\min_i h(i)$ over inserted elements. Deletions ($v < 0$) break this: if the element with the minimum hash value gets deleted, the stored minimum becomes stale, and the true second-minimum was never recorded. Linear sketching handles deletions natively.
+:::
+
+### Linear sketches
+
+A **linear sketch** is a compressed representation of $x$ defined by a fixed $m \times n$ matrix $\Pi$ (with $m \ll n$). You store $y = \Pi x \in \mathbf{R}^m$—a vector of $m$ numbers instead of $n$. Write the columns of $\Pi$ as $\pi_1, \ldots, \pi_n$.
+
+When an update $(i, v)$ arrives, the sketch updates as $y \leftarrow y + v \cdot \pi_i$—a single vector addition. This works because $\Pi(x + v\,e_i) = \Pi x + v\,\pi_i$. The linearity is the key property: the sketch of the updated vector equals the update applied to the sketch. Deletions are just updates with negative $v$, and they work identically.
+
+You never store $x$ itself. You never store $\Pi$ explicitly either (you generate its entries on the fly from a hash function). You only store $y$—$m$ numbers—and that is your entire memory.
+
+::: {.callout-note title="Aside (mine, not the lecturer's)"}
+Li, Nguyen, and Woodruff showed that for any streaming query that must support deletions, any algorithm can be converted into a linear sketch with at most an $O(\log n)$ blow-up in space. So linear sketching is essentially *the* framework for turnstile streaming.
+:::
+
+### The AMS sketch {#sec-ams}
+
+**Construction.** Set $\Pi$ to be an $m \times n$ matrix with independent entries $\pi_{ij} = \sigma_{ij}/\sqrt{m}$, where each $\sigma_{ij}$ is a uniform random sign ($+1$ or $-1$ with equal probability). Store $y = \Pi x$ and estimate $\|x\|_2^2$ as $\|y\|_2^2$.
+
+<!-- TikZ: a matrix diagram showing the fat-short random sign matrix Pi (m rows, n columns) multiplied by the tall vector x to produce the short vector y, with labels m << n -->
+
+### Analysis: expectation {#sec-ams-expectation}
+
+Each coordinate of $y$ is $y_r = \frac{1}{\sqrt{m}} \sum_{i=1}^{n} \sigma_{ri}\, x_i$. Squaring:
+
+$$
+y_r^2 = \frac{1}{m}\Biggl(\sum_i \sigma_{ri}^2\, x_i^2 + \sum_{i \ne j} \sigma_{ri}\,\sigma_{rj}\,x_i\,x_j\Biggr).
+$$ {#eq-yr-sq}
+
+Since $\sigma_{ri}^2 = 1$ and $\mathbf{E}[\sigma_{ri}\,\sigma_{rj}] = \mathbf{E}[\sigma_{ri}]\,\mathbf{E}[\sigma_{rj}] = 0$ for $i \ne j$ (by independence):
+
+$$
+\mathbf{E}[y_r^2] = \frac{1}{m}\,\|x\|_2^2.
+$$ {#eq-eyr}
+
+Summing over $r = 1, \ldots, m$:
+
+$$
+\mathbf{E}\bigl[\|y\|_2^2\bigr] = \|x\|_2^2.
+$$ {#eq-ey}
+
+The sketch gives an unbiased estimator.
+
+### Analysis: variance {#sec-ams-variance}
+
+By independence of the rows of $\Pi$, the variance of $\|y\|_2^2 = \sum_r y_r^2$ is $m \cdot \operatorname{Var}(y_r^2)$. To bound $\operatorname{Var}(y_r^2) = \mathbf{E}[y_r^4] - (\mathbf{E}[y_r^2])^2$, expand $y_r^4$:
+
+$$
+y_r^4 = \frac{1}{m^2}\Biggl(\sum_i \sigma_{ri}\,x_i\Biggr)^4.
+$$
+
+When you expand the fourth power, you get $n^4$ monomials, each a product of four random signs times four $x$ values. Push the expectation inside by linearity. Any monomial where some $\sigma_{ri}$ appears to an odd power has zero expectation (since $\mathbf{E}[\sigma^{\text{odd}}] = 0$ for a symmetric $\pm 1$ variable). This kills most terms. The surviving terms fall into two categories:
+
+- **Four equal indices ($i = j = k = l$):** $\sigma_{ri}^4\,x_i^4$. Since $\sigma^4 = 1$, these contribute $\sum_i x_i^4$.
+- **Two pairs ($i = j \ne k = l$):** $\sigma_{ri}^2\,\sigma_{rk}^2\,x_i^2\,x_k^2$. Since $\sigma^2 = 1$, these contribute the cross terms $\sum_{i \ne k} x_i^2 x_k^2$, with a combinatorial factor (the number of ways to pair four slots into two equal pairs yields a coefficient of $\binom{4}{2} = 6$, but accounting for the ordering gives a factor of 3 for the $i \ne j$ terms).
+
+All terms with three or four distinct indices vanish because at least one index appears to an odd power.
+
+The bottom line:
+
+$$
+\mathbf{E}[y_r^4] = \frac{1}{m^2}\Bigl(\sum_i x_i^4 + 3\sum_{i \ne j} x_i^2 x_j^2\Bigr) \le \frac{3}{m^2}\Bigl(\sum_i x_i^2\Bigr)^2 = \frac{3}{m^2}\|x\|_2^4.
+$$
+
+Subtracting $(\mathbf{E}[y_r^2])^2 = \|x\|_2^4/m^2$:
+
+$$
+\operatorname{Var}(y_r^2) = \mathbf{E}[y_r^4] - (\mathbf{E}[y_r^2])^2 \le \frac{3}{m^2}\|x\|_2^4 - \frac{1}{m^2}\|x\|_2^4 = \frac{2}{m^2}\,\|x\|_2^4,
+$$
+
+which gives
+
+$$
+\operatorname{Var}\bigl(\|y\|_2^2\bigr) = m \cdot \operatorname{Var}(y_r^2) \le \frac{2}{m}\,\|x\|_2^4.
+$$ {#eq-var-y}
+
+### Putting it together: Chebyshev {#sec-chebyshev}
+
+By Chebyshev's inequality:
+
+$$
+\Pr\bigl[\bigl|\|y\|_2^2 - \|x\|_2^2\bigr| > \varepsilon\,\|x\|_2^2\bigr]
+\;\le\; \frac{\operatorname{Var}(\|y\|_2^2)}{\varepsilon^2\,\|x\|_2^4}
+\;\le\; \frac{2}{m\,\varepsilon^2}.
+$$ {#eq-chebyshev-l2}
+
+Setting $m = 6/\varepsilon^2$ makes the failure probability at most $1/3$.
+
+### Amplification via the median trick {#sec-median}
+
+Run $k = O(\log(1/\delta))$ independent copies of the sketch, producing estimates $\hat{F}_1, \ldots, \hat{F}_k$. Output the **median**.
+
+Each copy succeeds with probability $\ge 2/3$. For the median to fail, more than half the copies must fail. The expected number of failures is $\le k/3$, but a majority failure requires $\ge k/2$—a large deviation. By a Chernoff bound, this probability is $\exp(-\Omega(k)) \le \delta$.
+
+**Total space:** $O\!\left(\frac{1}{\varepsilon^2}\,\log\frac{1}{\delta}\right)$ words, each holding a partial sum. This is optimal (Jayaram–Woodruff, TALG).
+
+::: {.callout-tip title="Why median, not average?"}
+Averaging would also reduce variance, but it requires the estimator to have bounded variance in every direction. The median is more robust: even if a few copies produce wildly wrong answers, the median ignores them. This makes the analysis cleaner and the bound tighter.
+:::
+
+## The Thorup–Zhang sparse sketch {#sec-thorup-zhang}
+
+### Motivation: update time
+
+The dense AMS sketch has $m$ non-zeros in every column of $\Pi$, so each stream update costs $O(m) = O(1/\varepsilon^2 \cdot \log(1/\delta))$ time. For applications like network monitoring, this overhead matters.
+
+### Construction
+
+Replace the dense random-sign matrix with a **sparse** one: each column has exactly *one* non-zero entry, a random sign $\pm 1$ placed in a random row.
+
+<!-- TikZ: side-by-side comparison of the dense AMS matrix (all entries filled with ±1/√m) and the Thorup-Zhang sparse matrix (one non-zero per column), with columns highlighted -->
+
+Formally, for each column $j$, pick $r_j \in [m]$ uniformly at random and $\sigma_j \in \{+1, -1\}$ uniformly. Set $\pi_{r_j, j} = \sigma_j$ and all other entries in column $j$ to zero.
+
+The sketch is still $y = \Pi x$. The estimate is still $\|y\|_2^2$. The expectation and variance analysis go through with the same asymptotic bounds—you can verify that $\mathbf{E}[\|y\|_2^2] = \|x\|_2^2$ and $\operatorname{Var}(\|y\|_2^2) = O(\|x\|_2^4 / m)$. The computation is similar but not identical: instead of independence between entries in the same row, you use the fact that each entry of $y$ is now a sum over a random subset of coordinates of $x$ (those mapped to that row).
+
+**Update time:** When update $(i, v)$ arrives, column $i$ of $\Pi$ has a single non-zero in row $r_i$. So $y$ changes in exactly one coordinate: $y_{r_i} \leftarrow y_{r_i} + v \cdot \sigma_i$. That is $O(1)$ time. With $O(\log(1/\delta))$ independent copies for the median amplification, the total update time is $O(\log(1/\delta))$—independent of $\varepsilon$.
+
+::: {.callout-important title="Strictly better"}
+The sparse sketch matches the dense one in space and accuracy while improving update time from $O(1/\varepsilon^2 \cdot \log(1/\delta))$ to $O(\log(1/\delta))$. There is no reason to use the dense version.
+:::
+
+::: {.callout-note title="Open problem"}
+Can $\ell_2$-norm estimation achieve $O(1)$ update time (or even $O(\sqrt{\log(1/\delta)})$) with optimal space? It is known that any *linear sketch* requires update time $\Omega(\sqrt{\log(1/\delta)})$, but there is a gap to the $O(\log(1/\delta))$ upper bound.
+:::
+
+## Application: cosine similarity {#sec-cosine}
+
+Random-sign sketches preserve dot products, not just norms. This unlocks a classic application: comparing documents without storing them in full.
+
+**Setup.** Represent each document as a bag-of-words vector $x \in \mathbf{R}^n$, where $x_i$ is the number of occurrences of word $i$. Normalise to unit length: $x \leftarrow x / \|x\|_2$. The **cosine similarity** of documents $x$ and $y$ is $\langle x, y \rangle = \cos\theta$, where $\theta$ is the angle between them. Similar documents have $\cos\theta$ close to 1; orthogonal (unrelated) documents have $\cos\theta \approx 0$.
+
+The vocabulary size $n$ can be hundreds of thousands. Storing the full vector for every document is expensive. Instead, store the sketch $\Pi x \in \mathbf{R}^m$ with $m \ll n$.
+
+**Why sketches preserve dot products.** Use the polarisation identity:
+
+$$
+\langle a, b \rangle = \frac{\|a\|_2^2 + \|b\|_2^2 - \|a - b\|_2^2}{2}.
+$$ {#eq-polarise}
+
+The right-hand side involves three $\ell_2$-norms. The sketch $\Pi$ preserves each up to $(1 \pm \varepsilon)$, so the reconstructed dot product $\langle \Pi x, \Pi y \rangle$ is within additive $O(\varepsilon)$ of $\langle x, y \rangle$. You can estimate cosine similarity from the compressed representations alone, without ever decompressing.
+
+<!-- TikZ: two unit vectors x and y on a circle in R^n, the angle theta between them, and their projections Pi*x and Pi*y in lower-dimensional R^m with the angle approximately preserved -->
+
+## Fast regression via subspace embeddings {#sec-regression}
+
+### The least-squares bottleneck
+
+In linear regression, you have $n$ observations and $d$ parameters. There is some unknown parameter vector $x \in \mathbf{R}^d$, and each observation gives you a row $a_i \in \mathbf{R}^d$ of predictor values and a response $b_i$. In the ideal noiseless case, $b_i = a_i^\top x$. In reality, observations are corrupted by noise: $b_i = a_i^\top x + \text{noise}$.
+
+Stack the observations into an $n \times d$ matrix $A$ (with $n \gg d$) and a vector $b \in \mathbf{R}^n$. The least-squares solution minimises the sum of squared residuals:
+
+$$
+x^* = \operatorname{argmin}_x \|Ax - b\|_2 = (A^\top A)^+ A^\top b,
+$$ {#eq-ols}
+
+where $(A^\top A)^+$ is the pseudoinverse (which equals the ordinary inverse when $A$ has full column rank). The dominant cost is forming $A^\top A$: a $d \times n$ matrix times an $n \times d$ matrix. Each of the $d^2$ entries requires a dot product of length $n$, giving $O(nd^2)$ total time. The subsequent solve—inverting the $d \times d$ matrix $(A^\top A)$—costs only $O(d^3)$, which is negligible when $n \gg d$.
+
+### Sketched regression
+
+Instead of solving the original problem, solve the *sketched* version:
+
+$$
+\tilde{x}^* = \operatorname{argmin}_x \|\Pi A x - \Pi b\|_2,
+$$ {#eq-sketched-ols}
+
+where $\Pi$ is an $m \times n$ sketch matrix with $m \ll n$. The bottleneck becomes $(\Pi A)^\top (\Pi A)$, which is $d \times m$ times $m \times d$—costing $O(md^2)$.
+
+### Subspace embeddings {#sec-subspace-embed}
+
+**Definition** (Sarlós, 2006). An $m \times n$ matrix $\Pi$ is an **$\varepsilon$-subspace embedding** for a linear subspace $V \subseteq \mathbf{R}^n$ if for all $v \in V$:
+
+$$
+(1-\varepsilon)\,\|v\|_2^2 \;\le\; \|\Pi v\|_2^2 \;\le\; (1+\varepsilon)\,\|v\|_2^2.
+$$ {#eq-subspace-embed}
+
+::: {.callout-tip title="Intuition"}
+A subspace embedding is a random-sign sketch that works *simultaneously* for every vector in a $d$-dimensional subspace—not just one vector at a time. It is a uniform guarantee over an infinite set of directions.
+:::
+
+**Claim.** If $\Pi$ is an $\varepsilon$-subspace embedding for the column space of $[A \mid b]$ (the $(d+1)$-dimensional subspace spanned by $b$ and the columns of $A$), then:
+
+$$
+\|A\tilde{x}^* - b\|_2 \;\le\; \frac{1+\varepsilon}{1-\varepsilon}\,\|Ax^* - b\|_2.
+$$
+
+*Proof.* Since $\tilde{x}^*$ minimises the sketched objective: $\|\Pi A\tilde{x}^* - \Pi b\| \le \|\Pi A x^* - \Pi b\|$. Both $A\tilde{x}^* - b$ and $Ax^* - b$ lie in the subspace, so $\Pi$ preserves their norms up to $(1 \pm \varepsilon)$. Combining these two facts:
+
+$$
+(1-\varepsilon)\|A\tilde{x}^* - b\|^2 \le \|\Pi(A\tilde{x}^* - b)\|^2 \le \|\Pi(Ax^* - b)\|^2 \le (1+\varepsilon)\|Ax^* - b\|^2.
+$$
+
+Rearranging gives the result.
+
+### How many rows does $\Pi$ need?
+
+Let $U$ be an $n \times d$ matrix whose columns form an orthonormal basis for $V$ (so $U^\top U = I_d$). The subspace embedding condition is equivalent to:
+
+$$
+\|\Pi U^\top \Pi U - I_d\|_{\mathrm{op}} < \varepsilon,
+$$ {#eq-ose-equiv}
+
+where $\|\cdot\|_{\mathrm{op}}$ denotes the operator norm (largest singular value). The analysis mirrors the vector case but uses a **matrix Chebyshev** argument:
+
+$$
+\Pr\bigl[\|\Pi U^\top \Pi U - I\|_{\mathrm{op}} > \varepsilon\bigr] \le \frac{\mathbf{E}\bigl[\|\Pi U^\top \Pi U - I\|_F^2\bigr]}{\varepsilon^2},
+$$
+
+where $\|\cdot\|_F$ is the Frobenius norm (square root of the sum of squared eigenvalues). The key inequality: $\|M\|_{\mathrm{op}}^2 \le \|M\|_F^2 = \operatorname{tr}(M^2)$ for symmetric $M$.
+
+The computation shows this is $O(d^2/m)$, so setting $m = O(d^2/\varepsilon^2)$ suffices.
+
+::: {.callout-note title="References"}
+The subspace-embedding approach to regression was introduced by Sarlós (FOCS 2006). The analysis via Frobenius norm appears in Clarkson–Woodruff (STOC 2013) and, in the clean form shown here, in Meng–Mahoney (STOC 2013) and Nelson–Nguyen (FOCS 2013).
+:::
+
+### Time to compute $\Pi A$
+
+With the Thorup–Zhang sparse sketch (one non-zero per column), multiplying $\Pi \cdot A$ costs $O(\operatorname{nnz}(A))$—proportional to the number of non-zero entries in $A$. Each non-zero $A_{ij}$ contributes to a single entry of $\Pi A$ (because column $j$ of $\Pi$ has one non-zero), so the total work is one addition per non-zero.
+
+**Total regression time:** $O(\operatorname{nnz}(A)) + O(\operatorname{poly}(d/\varepsilon))$, down from $O(nd^2)$.
+
+## Johnson–Lindenstrauss dimensionality reduction {#sec-jl}
+
+### Statement
+
+**Lemma (Johnson–Lindenstrauss, 1984).** For any set $X \subset \mathbf{R}^n$ of $N$ points and any $\varepsilon > 0$, there exists a linear map $\Pi : \mathbf{R}^n \to \mathbf{R}^m$ with $m = O(\varepsilon^{-2}\log N)$ such that for all $x, y \in X$:
+
+$$
+(1-\varepsilon)\,\|x - y\|_2^2 \;\le\; \|\Pi x - \Pi y\|_2^2 \;\le\; (1+\varepsilon)\,\|x - y\|_2^2.
+$$ {#eq-jl}
+
+This is optimal: $m = \Omega(\min(n, \varepsilon^{-2}\log N))$ rows are necessary (the $\min$ with $n$ because the identity matrix trivially works).
+
+### Proof idea
+
+Design a distribution $\mathcal{D}$ over $m \times n$ matrices such that for any fixed unit vector $z$:
+
+$$
+\Pr_{\Pi \sim \mathcal{D}}\bigl[\bigl|\|\Pi z\|_2^2 - 1\bigr| > \varepsilon\bigr] \le \delta.
+$$
+
+Take $\mathcal{D}$ to be the uniform distribution over random sign matrices $(\pm 1/\sqrt{m})^{m \times n}$, and set $m = O(\varepsilon^{-2}\log(1/\delta))$.
+
+For a single vector, Chebyshev (second moment) gives failure probability $O(1/m\varepsilon^2)$—enough for constant probability but not small $\delta$. To get $\delta$, use higher moments: the $p$-th moment of $\|\Pi z\|_2^2 - 1$ involves monomials in the random signs, and only terms where every sign appears to an even power survive. Optimising $p \approx \log(1/\delta)$ yields the exponential tail bound.
+
+Apply a union bound over all $\binom{N}{2}$ pairs with $\delta = 1/\binom{N}{2}$: $\log(1/\delta) = O(\log N)$, giving $m = O(\varepsilon^{-2}\log N)$.
+
+::: {.callout-note title="Aside (mine, not the lecturer's)"}
+JL is often presented as a "surprising" result, but the mechanism is simple once you see it through the lens of this lecture. Random projection into $m$ dimensions preserves the norm of any *single* vector with high probability (just the AMS analysis). JL is the observation that if you want this to hold *simultaneously* for $\binom{N}{2}$ direction vectors $x - y$, you pay a union bound—$\log\binom{N}{2} = O(\log N)$ extra dimensions—and that is all.
+:::
+
+::: {.callout-tip title="Connection to Chernoff bounds"}
+The moment-method proof is exactly the same technique used to prove Chernoff bounds: bound the moment-generating function (or equivalently, optimise over which moment to use in Markov's inequality). The Chernoff bound itself is the special case for sums of independent Bernoulli variables; JL is the generalisation to quadratic forms in random signs.
+:::
+
+## Point query via JL {#sec-point-query}
+
+### The problem
+
+A different streaming query: instead of asking for a global statistic like $\|x\|_2^2$, you want to recover *individual entries* of $x$. Support turnstile updates to $x \in \mathbf{R}^n$, and given a query index $i$, output $\tilde{x}_i$ satisfying $|\tilde{x}_i - x_i| \le \varepsilon \|x\|_1$. The error is relative to the total "mass" $\|x\|_1 = \sum_j |x_j|$, so entries much larger than the average are recovered accurately.
+
+### Construction
+
+Store $y = \Pi x$ for a suitable $\Pi$. Estimate $x_i$ as $\tilde{x}_i = (\Pi^\top y)_i = (\Pi^\top \Pi x)_i$.
+
+Expanding: $\tilde{x}_i = x_i + \sum_{j \ne i} x_j\,\langle \pi_i, \pi_j \rangle$. If the columns of $\Pi$ are *nearly orthonormal*—$\|\pi_i\|_2 \approx 1$ and $|\langle \pi_i, \pi_j \rangle| \le \varepsilon$ for $i \ne j$—then the error is at most $\varepsilon \sum_j |x_j| = \varepsilon \|x\|_1$.
+
+### Getting the right $\Pi$
+
+Apply the JL lemma to $X = \{0, e_1, \ldots, e_n\}$ (the origin plus the $n$ standard basis vectors). JL preserves all $\binom{n+1}{2}$ pairwise distances, which implies:
+
+- $\|\Pi e_i\|_2 \approx 1$ (distances to the origin are preserved).
+- $\|\Pi e_i - \Pi e_j\|_2 \approx \sqrt{2}$ (distances between basis vectors are preserved).
+
+By the polarisation identity, $|\langle \Pi e_i, \Pi e_j \rangle| \le O(\varepsilon)$ for $i \ne j$.
+
+**Space:** $m = O(\varepsilon^{-2}\log n)$.
+
+::: {.callout-note title="Aside (mine, not the lecturer's)"}
+This construction is closely related to the **Count-Sketch** data structure (Charikar–Chen–Farach-Colton, 2002), which achieves point-query error $\varepsilon\|x\|_2$ (an $\ell_2$ guarantee, stronger than $\ell_1$) with space $O(1/\varepsilon^2)$ and $O(1)$ update time using the Thorup–Zhang sparse structure plus separate sign and bucket hash functions.
+:::
+
+## Four-wise independence suffices {#sec-fourwise}
+
+A crucial practical point: the dense AMS analysis only uses expectations of degree-four polynomials in the random signs. Independence beyond degree four is never needed. A **four-wise independent** family of random signs—specifiable with $O(\log n)$ bits per row—produces the same expectation and variance bounds. So the entire matrix $\Pi$ (with $k$ independent stacked copies for the median trick) is described by $O(k \log n)$ bits—far less than the $mn$ entries of $\Pi$ itself.
+
+## Cheat sheet
+
+::: {.callout-important title="Cheat sheet — Lecture 26"}
+
+**AMS / random-sign sketch**
+
+- $\Pi$: $m \times n$ matrix, entries $\pm 1/\sqrt{m}$ i.i.d. Store $y = \Pi x$.
+- $\mathbf{E}[\|y\|_2^2] = \|x\|_2^2$; $\operatorname{Var}(\|y\|_2^2) \le 2\|x\|_2^4/m$.
+- Space for $(1\pm\varepsilon)$ with prob $\ge 1-\delta$: $O(\varepsilon^{-2}\log(1/\delta))$.
+- Update time (dense): $O(\varepsilon^{-2}\log(1/\delta))$.
+
+**Thorup–Zhang sparse sketch**
+
+- One random sign per column; everything else zero.
+- Same space/accuracy; update time drops to $O(\log(1/\delta))$.
+- Open: can update time reach $O(1)$?
+
+**Subspace embedding (regression)**
+
+- $\Pi$ is $\varepsilon$-subspace embedding for $V$ if $\|\Pi v\|^2 = (1\pm\varepsilon)\|v\|^2$ for all $v \in V$.
+- For $d$-dimensional subspace: $m = O(d^2/\varepsilon^2)$ rows suffice.
+- Sketched regression: $\tilde{x}^* = \operatorname{argmin}\|\Pi Ax - \Pi b\|$ achieves $(1+O(\varepsilon))$-approximate residual.
+- Time: $O(\operatorname{nnz}(A) + \operatorname{poly}(d/\varepsilon))$.
+
+**Johnson–Lindenstrauss**
+
+- $m = O(\varepsilon^{-2}\log N)$ rows preserve all pairwise distances among $N$ points.
+- Optimal up to constants.
+- Proof: moment method (Markov with $p \approx \log(1/\delta)$ moment).
+
+**Point query**
+
+- JL on the standard basis → near-orthonormal columns → $|\tilde{x}_i - x_i| \le \varepsilon\|x\|_1$.
+- Space: $O(\varepsilon^{-2}\log n)$.
+:::
+
+## FAQ — questions students actually asked
+
+**Q: Is there any reason to ever use the dense AMS sketch instead of the Thorup–Zhang sparse one?**
+A: No. The sparse sketch matches the dense one in space and accuracy while strictly improving update time. Use the sparse version.
+
+**Q: In the variance calculation, you said terms with odd powers of $\sigma$ vanish. Why?**
+A: Each $\sigma_{ri}$ is $\pm 1$ with equal probability, so $\mathbf{E}[\sigma_{ri}^{2k+1}] = 0$ for any non-negative integer $k$. When you expand $y_r^4$ and push the expectation inside, any monomial where some $\sigma_{ri}$ appears to an odd power contributes zero. Only the "even-power" monomials survive—specifically, terms like $\sigma_{ri}^4 x_i^4$ and $\sigma_{ri}^2 \sigma_{rj}^2 x_i^2 x_j^2$.
+
+**Q: For the regression application, don't you have to spend time computing $\Pi A$? That's still $O(n)$ per column.**
+A: With the Thorup–Zhang sparse sketch, each column of $\Pi$ has one non-zero entry. So multiplying $\Pi \times A$ costs $O(\operatorname{nnz}(A))$—you touch each non-zero of $A$ exactly once. For sparse matrices, this can be much less than $nd$.
+
+**Q: Why is preserving $\ell_2$-norms useful for detecting denial-of-service attacks?**
+A: A DoS attack concentrates traffic on a few destinations, creating spikes in the vector $x$ of packet counts. The $\ell_2$-norm squared $\sum x_i^2$ is sensitive to such spikes (unlike the $\ell_1$-norm, which only measures total traffic). Thorup and Zhang at AT&T Research used this to detect skewness in destination distributions—ideally you'd use $\ell_\infty$, but no space-efficient streaming algorithm exists for it, and $\ell_2$ is the best tractable proxy.
+
+**Q: You said four-wise independence suffices for the AMS analysis. Does that mean we don't need truly random $\Pi$?**
+A: Correct. The expectation calculation uses independence of pairs of signs; the variance uses independence of quadruples. A four-wise independent family (storable in $O(\log n)$ bits) provides both. The entire sketch, including $\log(1/\delta)$ independent copies, is specified by $O(\log(1/\delta) \cdot \log n)$ bits.
+
+**Q: For the JL proof, why do you need higher moments instead of Chebyshev?**
+A: Chebyshev (second moment) gives failure probability $O(1/(m\varepsilon^2))$ for a single vector. Setting this to $1/N^2$ (for a union bound over $\binom{N}{2}$ pairs) requires $m = O(N^2/\varepsilon^2)$—far too large. The $p$-th moment of $\|\Pi z\|_2^2 - 1$ decays as $(C/m)^{p/2}$ (by the same even-power argument). Optimising $p \approx \log(1/\delta)$ yields $\exp(-\Omega(m\varepsilon^2))$, so $m = O(\varepsilon^{-2}\log N)$ suffices.
+
+## Further reading
+
+1. **N. Alon, Y. Matias, M. Szegedy.** *The space complexity of approximating the frequency moments.* JCSS 58(1), 1999. Introduced the AMS sketch for $\ell_2$-norm estimation and proved streaming lower bounds.
+
+2. **M. Thorup, Y. Zhang.** *Tabulation-based 5-independent hashing with applications to linear probing and second moment estimation.* SODA 2004. The sparse one-nonzero-per-column sketch for faster updates.
+
+3. **T. Sarlós.** *Improved approximation algorithms for large matrices via random projections.* FOCS 2006. Introduced subspace embeddings for fast regression and low-rank approximation.
+
+4. **K.L. Clarkson, D.P. Woodruff.** *Low-rank approximation and regression in input sparsity time.* STOC 2013. Input-sparsity-time algorithms using the Thorup–Zhang sketch as a subspace embedding.
+
+5. **W.B. Johnson, J. Lindenstrauss.** *Extensions of Lipschitz mappings into a Hilbert space.* Contemporary Mathematics 26, 1984. The original dimensionality-reduction lemma.
+
+6. **R. Jayaram, D.P. Woodruff.** *Optimal streaming and tracking distinct elements with high probability.* TALG. Proves the space lower bound $\Omega(\varepsilon^{-2}\log(1/\delta))$ for $\ell_2$-norm estimation, matching the AMS upper bound.
+
+## Try it yourself
+
+1. **AMS by hand.** Let $x = (3, -1, 4)$ and $\Pi = \frac{1}{\sqrt{2}}\begin{pmatrix} +1 & -1 & +1 \\ -1 & -1 & +1 \end{pmatrix}$. Compute $y = \Pi x$ and $\|y\|_2^2$. Compare with $\|x\|_2^2 = 26$. How large is the relative error?
+
+2. **Variance bound.** Prove that $\operatorname{Var}(y_r^2) \le \frac{2}{m^2}\|x\|_2^4$ by carefully expanding $\mathbf{E}[y_r^4]$ and using $\sigma_{ri}^{2k} = 1$.
+
+3. **Sketched regression.** Implement the Thorup–Zhang sketched least-squares solver. Generate a random $1000 \times 5$ matrix $A$, a true parameter $x^*$, set $b = Ax^* + \text{noise}$. Compare the sketched solution ($m = 200$) against the exact least-squares solution.
+
+```python
+import numpy as np
+
+def sparse_sketch(n, m, rng):
+    """Build a Thorup-Zhang sparse sketch matrix (m x n)."""
+    Pi = np.zeros((m, n))
+    rows = rng.integers(0, m, size=n)
+    signs = rng.choice([-1, 1], size=n)
+    Pi[rows, np.arange(n)] = signs
+    return Pi
+
+rng = np.random.default_rng(42)
+n, d = 1000, 5
+A = rng.standard_normal((n, d))
+x_true = rng.standard_normal(d)
+b = A @ x_true + 0.1 * rng.standard_normal(n)
+
+# Exact least squares
+x_exact, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
+
+# Sketched least squares
+m = 200
+Pi = sparse_sketch(n, m, rng)
+PA = Pi @ A
+Pb = Pi @ b
+x_sketch, _, _, _ = np.linalg.lstsq(PA, Pb, rcond=None)
+
+print(f"Exact solution:    {x_exact.round(4)}")
+print(f"Sketched solution: {x_sketch.round(4)}")
+print(f"Exact residual:    {np.linalg.norm(A @ x_exact - b):.4f}")
+print(f"Sketched residual: {np.linalg.norm(A @ x_sketch - b):.4f}")
+```
+
+4. **JL experiment.** Generate $N = 500$ random points in $\mathbf{R}^{1000}$. Project to $\mathbf{R}^m$ using a random sign matrix for several values of $m$. Plot the maximum distortion $\max_{x,y} \bigl|\|\Pi x - \Pi y\|/\|x-y\| - 1\bigr|$ vs. $m$. At what $m$ does the distortion drop below $0.1$? Compare with the JL prediction $m \approx \varepsilon^{-2}\log N$.
+
+5. **Cosine similarity.** Create two "document" vectors (bag-of-words over a vocabulary of $n = 10{,}000$ words), normalise them to unit norm, and compare the true cosine similarity with the estimate from $\langle \Pi x, \Pi y \rangle$ for $m = 50, 100, 500$. How does the error scale with $m$?

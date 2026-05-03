@@ -1,0 +1,413 @@
+---
+title: "Splay Trees"
+subtitle: "COMPSCI 224 Lecture 7 — Fall 2014"
+author: "Companion notes by Kun Deng"
+date: today
+abstract: |
+  Splay trees are self-adjusting binary search trees that achieve O(log n)
+  amortized time per operation through a deceptively simple restructuring
+  rule. Their real power lies not in matching balanced BSTs but in
+  *adapting* to access patterns — the same data structure, with no
+  parameter tuning, achieves static optimality, the working set property,
+  and the static and dynamic finger properties. Whether splay trees are
+  *dynamically optimal* — competitive with any BST algorithm, even one
+  that knows the future — remains one of the longest-standing open
+  problems in data structures.
+---
+
+## Why this lecture matters {#sec-why}
+
+Splay trees won the 1999 Paris Kanellakis Theory and Practice Award for being "one of the most widely used data structures invented in the last 20 years." The algorithm itself is trivial to implement — three cases, each a pair of rotations. The analysis is where all the difficulty lives, and the flexibility of the potential-function proof technique lets you derive a remarkable family of optimality properties by changing a single weight function.
+
+::: {.callout-tip title="The 30-second story"}
+1. A splay tree is a binary search tree that moves every accessed node to the root via a specific sequence of double rotations.
+2. Naive rotate-to-root doesn't work — it can leave the tree just as unbalanced as before.
+3. The splay operation uses three cases (zig, zig-zig, zig-zag) that halve the depth of the path it traverses.
+4. A potential-function argument with per-node *ranks* shows that each splay costs O(log(W/w(x))) amortized, where W is the total weight and w(x) is the weight of the accessed node.
+5. Setting all weights to 1 gives O(log n) amortized; setting weights to 1/3^{depth in T} gives static optimality against any fixed tree T.
+6. The dynamic optimality conjecture — that splay trees are O(1)-competitive against *any* BST algorithm — has been open since 1985.
+:::
+
+
+## The dictionary problem in the BST model {#sec-bst-model}
+
+The dictionary problem asks you to support `insert(k, v)`, `find(k)`, and `delete(k)` on a dynamic set of key-value pairs. Hash tables solve this in expected O(1) time, but they don't support ordered queries like predecessor. Comparison-based solutions — binary search trees — do.
+
+A **BST algorithm** operates as follows. At the start of each operation you hold a pointer to the root. At each step you may:
+
+- follow a child pointer (left or right),
+- follow a parent pointer, or
+- perform a **rotation** on the node you are currently pointing to.
+
+The cost of an operation is the number of steps taken. This is the **BST model**.
+
+::: {.callout-note}
+The BST model is restrictive: you cannot jump to an arbitrary node. Your pointer always starts at the root and must walk the tree one edge at a time. This is what makes the dynamic optimality conjecture hard — you have to show that splay trees, which also start at the root each time, cannot be beaten by much.
+:::
+
+### Rotations {#sec-rotations}
+
+A rotation at node $x$ (whose parent is $y$) restructures the local neighbourhood: $x$ becomes the parent of $y$, and the subtrees rearrange to preserve BST order. Concretely, if $x$ is the left child of $y$ with subtrees $A$ (left) and $B$ (right), and $y$ has subtree $C$ on its right:
+
+- After `rotate(x)`: $x$ becomes the root of this subtree, $y$ becomes $x$'s right child, $A$ stays as $x$'s left child, $B$ becomes $y$'s left child, and $C$ stays as $y$'s right child.
+
+<!-- TikZ: Left rotation at node x. Before: y is parent of x (left child), subtrees A, B under x and C under y. After: x is parent of y (right child), A under x, B and C under y. Label both states "before" and "after". -->
+
+The operation is symmetric when $x$ is a right child. Rotations are the *only* mechanism a BST algorithm has for restructuring the tree. A rotation is a local operation — it takes $O(1)$ time and preserves the BST ordering invariant.
+
+
+## Splay trees: definition {#sec-splay-def}
+
+Splay trees are due to Sleator and Tarjan (1985). The data structure is a plain binary search tree. The twist: after every `find`, `insert`, or `delete`, the accessed node is *splayed* — brought to the root through a specific sequence of rotations. The original paper is titled "Self-Adjusting Binary Search Trees" — the tree adjusts itself after every operation without any external guidance.
+
+**Find(x).** Search for $x$ as in any BST (walk from root to $x$), then splay $x$. After the splay, $x$ is the new root.
+
+**Insert(x).** Insert $x$ as in any BST (at a leaf), then splay $x$.
+
+**Delete(x).** Splay $x$ (now it is the root). Remove $x$. If $x$ had two children, splay the largest element in the left subtree and make it the new root — this element has no right child, so it cleanly becomes the root of both subtrees.
+
+<!-- TikZ: Delete operation in three steps. Step 1: splay x to root, left subtree L, right subtree R. Step 2: remove x, showing two disconnected trees L and R. Step 3: splay max(L) to root of L, attach R as its right child. -->
+
+::: {.callout-warning}
+Splaying is *not* the same as rotating $x$ to the root one step at a time. Naive rotate-to-root can leave the tree just as deep as it started. The magic is in the case structure of the splay operation.
+:::
+
+::: {.callout-tip}
+The algorithms and data structure are simple — Sleator reportedly gives different answers when asked where the splay operation came from, and one answer was simply "the math works." The implementation is easy; the proofs are where the difficulty lies. This is ideal for practitioners: you implement it once, and mathematicians prove the properties.
+:::
+
+
+## Why naive rotate-to-root fails {#sec-naive}
+
+Consider a right-leaning path: nodes $1, 2, 3, 4, 5, 6$ with $1$ at the root and each node the right child of the one above. The tree has depth 6.
+
+If you rotate $6$ to the root one step at a time, the resulting tree has $6$ at the root and $1$ as its left child, with $2, 3, 4, 5$ hanging off as a left-leaning chain. The depth is still $n$. No progress.
+
+<!-- TikZ: Two trees side by side. Left: right-leaning path 1-2-3-4-5-6. Right: after naive rotate-to-root on 6, tree with 6 at root, left child 1, then right-leaning chain 2-3-4-5 off of 1. Annotate both depths as n. -->
+
+
+## The splay operation {#sec-splay-op}
+
+Let $x$ be the node to splay, $y = \text{parent}(x)$, and $z = \text{parent}(y)$ (if it exists). Repeatedly apply one of three cases until $x$ is the root.
+
+**Case 1 — Zig.** $y$ is the root. Rotate $x$. (This happens at most once, at the very end.)
+
+**Case 2 — Zig-zig.** $x$ and $y$ are both left children (or both right children). Rotate $y$ first, *then* rotate $x$.
+
+**Case 3 — Zig-zag.** $x$ and $y$ go in opposite directions (one is a left child, the other a right child). Rotate $x$ twice.
+
+<!-- TikZ: Three panels, one per case. Case 1 (Zig): single rotation, x becomes root. Case 2 (Zig-zig): z → y → x path (left-left), show state after rotate y, then after rotate x. Case 3 (Zig-zag): z → y → x path (left-right), show state after first rotate x, then after second rotate x. Label subtrees A, B, C, D throughout. -->
+
+::: {.callout-tip title="Why rotate y first in zig-zig?"}
+In zig-zig, rotating $y$ before $x$ (rather than $x$ twice) is the key difference from naive rotate-to-root. It compresses the path: the depth of every node on the access path roughly halves.
+:::
+
+### Splay on a path {#sec-splay-path}
+
+Splay the deepest node of a right-leaning path of length $n$. After the splay, roughly half the original path hangs off the left spine and half off the right. The depth drops from $n$ to about $n/2$. This is not a proof, but it is a strong hint that the operation is doing something structurally useful.
+
+<!-- TikZ: Before: right-leaning path of 7 nodes. After splaying the deepest node: balanced-looking tree where roughly half the nodes are on each side. Annotate "depth ≈ n/2". -->
+
+
+## Properties of splay trees {#sec-properties}
+
+Before proving anything, here is the remarkable catalogue of properties that splay trees satisfy. Each follows from the same potential-function framework with a different choice of weights.
+
+### Static optimality (Sleator-Tarjan, 1985) {#sec-static-opt}
+
+For any sequence of find operations and any *fixed* binary search tree $T$, the time for the splay tree to serve the entire sequence is $O(\text{time for } T \text{ to serve it})$.
+
+Think about what this means: you could use dynamic programming to compute the optimal fixed BST for a given access sequence (this is in CLRS as the optimal BST problem). Splay trees match that optimal tree's performance — *without knowing the sequence in advance*.
+
+The optimal fixed tree for a given access distribution is related to Huffman coding; the resulting bound is proportional to the Shannon entropy of the access frequencies. Splay trees achieve this bound *without knowing the frequencies*.
+
+### Working set property {#sec-working-set}
+
+Let $t_j$ be the number of distinct items accessed since the last access to the $j$-th item in the sequence. The total time for $m$ operations is:
+
+$$
+O\!\left(m + n \log n + \sum_{j=1}^{m} \log t_j\right)
+$$ {#eq-working-set}
+
+If you repeatedly access the same 10 items, each access costs $O(\log 10)$ rather than $O(\log n)$. The "working set" stays near the root.
+
+### Static finger property (Sleator-Tarjan, 1985) {#sec-static-finger}
+
+Fix any item $f$. The amortized cost of `find(i)` is $O(\log |f - i| + 1)$ — logarithmic in the *rank distance* to $f$.
+
+### Dynamic finger property (Cole et al., 2000) {#sec-dynamic-finger}
+
+The amortized cost of the $i$-th operation in a sequence $x_1, x_2, \ldots, x_m$ is:
+
+$$
+O(\log |x_i - x_{i-1}| + 1)
+$$ {#eq-dynamic-finger}
+
+Your "finger" moves to the last-accessed item. The proof, due to Cole [-@cole2000dynamic] and Cole-Mishra-Schmidt-Siegel [-@cole2000dynamic2], is over 100 pages.
+
+::: {.callout-note title="Aside (mine, not the lecturer's)"}
+The dynamic finger property implies that splay trees are efficient for sequential or nearly-sequential access patterns — a common case in practice.
+:::
+
+### Unified bound (Iacono, 2001) {#sec-unified}
+
+The *unified bound* tries to combine the working set and finger properties. The desired amortized cost of the $j$-th operation is:
+
+$$
+O\!\left(\min_{i < j} \log(|x_i - x_j| + j - i)\right)
+$$ {#eq-unified}
+
+It is *not known* whether splay trees achieve this bound. Iacono gave a (non-BST) data structure that does. The closest BST result is by Derryberry and Sleator (2009), who achieved the unified bound plus an additive $O(m \log \log n)$ penalty.
+
+
+## The dynamic optimality conjecture {#sec-dynamic-opt}
+
+Let $\text{OPT}(\sigma)$ be the optimal cost of serving access sequence $\sigma$ in the BST model, where the algorithm knows $\sigma$ in advance and may rotate freely.
+
+::: {.callout-important title="Dynamic optimality conjecture (Sleator-Tarjan, 1985)"}
+There exists a fixed constant $C$ such that for all access sequences $\sigma$:
+
+$$
+\text{cost}_{\text{splay}}(\sigma) \le C \cdot \text{OPT}(\sigma)
+$$ {#eq-dynamic-opt}
+:::
+
+**The gap between static and dynamic optimality.** Static optimality compares splay trees to a *fixed* tree — one that cannot rotate or adjust itself. Dynamic optimality compares splay trees to *any* BST algorithm, including one that rotates freely with full knowledge of the future. The static result is a theorem; the dynamic result is an open conjecture.
+
+**Known approximations.** Any balanced BST gives $C = O(\log n)$ trivially (each operation costs at most $O(\log n)$, and OPT pays at least $\Omega(1)$). Tango trees (Demaine-Harmon-Iacono-Patrascu, 2004) achieved $C = O(\log \log n)$. Multi-splay trees (Wang-Derryberry-Sleator, 2006) also achieved $O(\log \log n)$ while simultaneously guaranteeing $O(\log n)$ amortized per operation. The conjecture asks for $C = O(1)$ and has been open for nearly 40 years.
+
+
+## Amortized analysis of splay {#sec-analysis}
+
+### The potential function {#sec-potential}
+
+Assign every item $x$ a positive **weight** $w(x)$. Define:
+
+- $s(x) = \sum_{z \in \text{subtree}(x)} w(z)$, the total weight in $x$'s subtree (including $x$),
+- $r(x) = \log s(x)$, the **rank** of $x$,
+- $\Phi = \sum_{i=1}^{n} r(i)$, the potential of the entire tree.
+
+::: {.callout-note}
+The potential function looks arbitrary — "the math works," as Sleator reportedly said when asked where it came from.
+:::
+
+### The splay lemma {#sec-splay-lemma}
+
+The amortized cost of a single splay step satisfies:
+
+| Case | Amortized cost |
+|------|----------------|
+| Case 2 (zig-zig) | $\le 3(r'(x) - r(x))$ |
+| Case 3 (zig-zag) | $\le 3(r'(x) - r(x))$ |
+| Case 1 (zig) | $\le 3(r'(x) - r(x)) + 1$ |
+
+: Amortized cost of each splay case, where $r'(x)$ is the rank of $x$ after the step. {#tbl-splay-lemma}
+
+Summing over all steps in a full splay, the intermediate ranks telescope. The zig case contributes at most one extra unit (it happens at most once). The total amortized cost of `splay(x)` is:
+
+$$
+O\!\left(1 + \log \frac{W}{s(x)}\right)
+$$ {#eq-splay-cost}
+
+where $W = \sum_{i} w(i)$ is the total weight.
+
+### Proof sketch for zig-zig (Case 2, left-left) {#sec-case2-proof}
+
+The tree has $z \to y \to x$ with $x$ the left child of $y$ and $y$ the left child of $z$. Subtrees $A, B$ hang off $x$; $C$ hangs off $y$; $D$ hangs off $z$.
+
+**Actual cost:** 2 (two rotations).
+
+**Change in potential:** Only $x$, $y$, $z$ change rank (the subtrees $A, B, C, D$ keep the same descendants). After the two rotations, $x$ sits at the top and $z$ is a descendant, so $r'(x) = r(z)$ (same total subtree). Also $r(y) \ge r(x)$ (parent has at least as large a subtree) and $r'(y) \le r'(x)$.
+
+The change in potential is:
+
+$$
+\Delta\Phi = r'(x) + r'(y) + r'(z) - r(x) - r(y) - r(z)
+$$
+
+Since $r'(x) = r(z)$, two terms cancel. Since $r'(y) \le r'(x)$ and $r(y) \ge r(x)$, this simplifies to:
+
+$$
+\Delta\Phi \le r'(x) + r'(z) - 2\,r(x)
+$$ {#eq-delta-phi-step1}
+
+Now bound $r'(z)$. The key step uses the **AM-GM inequality**. After the rotations, $s(x) + s'(z)$ counts all nodes except $y$, so $s(x) + s'(z) \le s'(x)$. Therefore:
+
+$$
+\frac{r(x) + r'(z)}{2} = \log\sqrt{s(x) \cdot s'(z)} \le \log\frac{s(x) + s'(z)}{2} \le \log\frac{s'(x)}{2} = r'(x) - 1
+$$
+
+Rearranging: $r'(z) \le 2\,r'(x) - r(x) - 2$. Substituting into @eq-delta-phi-step1:
+
+$$
+\Delta\Phi \le 3(r'(x) - r(x)) - 2
+$$
+
+The amortized cost is $2 + \Delta\Phi \le 3(r'(x) - r(x))$, as claimed.
+
+
+## Corollary: O(log n) amortized {#sec-logn}
+
+Set $w(x) = 1$ for all $x$. Then $W = n$ and $s(x) \ge 1$, so the amortized cost of `splay(x)` is $O(1 + \log n)$ by @eq-splay-cost.
+
+::: {.callout-important}
+Splay trees match the amortized performance of any balanced BST (red-black trees, AVL trees) with a simpler implementation and no balance metadata.
+:::
+
+
+## Static optimality via weights {#sec-static-opt-proof}
+
+This elegant proof is due to David Epstein (published on his LiveJournal, not in a formal paper).
+
+Fix a tree $T$ that places item $i$ at depth $\ell_i$. If `find(i)` is called $m_i$ times, the cost of serving the sequence with $T$ is $O(m + \sum_i m_i \ell_i)$.
+
+Set the weight of item $i$ to $w(i) = 1/3^{\ell_i}$.
+
+**Total weight $W$.** At depth $\ell$ in $T$, there are at most $2^\ell$ nodes. So:
+
+$$
+W = \sum_{\ell} \frac{|\text{nodes at depth } \ell|}{3^\ell} \le \sum_{\ell=0}^{\infty} \left(\frac{2}{3}\right)^\ell = 3
+$$
+
+$W$ is a constant.
+
+**Amortized cost of find($i$).** By @eq-splay-cost, it is $O(1 + \log(W / s(i)))$. Since $s(i) \ge w(i) = 1/3^{\ell_i}$ and $W \le 3$:
+
+$$
+\text{amortized cost of find}(i) = O(1 + \ell_i)
+$$
+
+**Potential bookkeeping.** The potential can be negative (ranks involve $\log(1/3^{\ell_i})$, which is negative). The actual total cost is:
+
+$$
+\text{actual} = \text{amortized total} + \Phi_{\text{initial}} - \Phi_{\text{final}}
+$$
+
+Each rank lies in $[-O(n), 0]$, so $|\Phi_{\text{initial}} - \Phi_{\text{final}}| \le O(n^2)$.
+
+**Conclusion.** The splay tree serves the sequence in time:
+
+$$
+O\!\left(n^2 + m + \sum_{i=1}^{n} m_i \ell_i\right)
+$$ {#eq-static-opt-bound}
+
+The $n^2$ term is a startup cost; once $m$ is large enough, the splay tree matches the fixed tree $T$ up to constants.
+
+::: {.callout-tip}
+The power of this framework is that you prove the splay lemma *once* and then derive different properties by plugging in different weight functions. The data structure itself never changes.
+:::
+
+
+## Cheat sheet {#sec-cheat-sheet}
+
+::: {.callout-important title="Splay trees — cheat sheet"}
+
+**Data structure.** A binary search tree. After every operation, the accessed node is splayed to the root.
+
+**Splay operation.** Repeatedly apply:
+
+- **Zig** (parent is root): rotate $x$.
+- **Zig-zig** (same direction): rotate parent, then rotate $x$.
+- **Zig-zag** (opposite direction): rotate $x$ twice.
+
+**Potential function.** $\Phi = \sum_i \log s(i)$, where $s(i) = \sum_{z \in \text{subtree}(i)} w(z)$.
+
+**Amortized cost of splay.** $O(1 + \log(W/s(x)))$.
+
+**Key results by weight choice:**
+
+| Property | Weight $w(i)$ | Amortized cost per op |
+|----------|---------------|----------------------|
+| O(log n) | 1 | O(log n) |
+| Static optimality | $1/3^{\ell_i}$ (depth in fixed tree $T$) | O(1 + $\ell_i$) |
+| Working set | (frequency-based) | O(log $t_j$) |
+
+**Dynamic optimality conjecture.** $\text{cost}_{\text{splay}}(\sigma) \le O(\text{OPT}(\sigma))$. Open since 1985. Best known: $O(\log \log n)$-competitive (tango trees, 2004).
+:::
+
+
+## FAQ — questions students actually asked {#sec-faq}
+
+**Q: Can't you just bound $r'(z)$ by $r'(x)$ directly, since $z$ is a descendant of $x$ after the zig-zig?**
+
+Yes, $r'(z) \le r'(x)$. That gives $\Delta\Phi \le 2(r'(x) - r(x))$, and the amortized cost is $2 + 2(r'(x) - r(x))$. The problem: after telescoping, you cannot cancel the constant 2 per step. Each splay has $\Theta(\text{depth})$ steps, so you end up with $O(\text{depth})$ amortized — no better than the actual cost. The AM-GM trick produces the crucial $-2$ that absorbs the constant.
+
+**Q: In case 1 (zig), where does the extra $+1$ come from?**
+
+Case 1 involves a single rotation. You don't get the $-2$ from AM-GM because there is no grandparent $z$. So the constant from the actual cost isn't fully absorbed. Case 1 happens at most once per splay (only when the parent is the root), so the $+1$ contributes $O(1)$ total.
+
+**Q: The potential can be negative — doesn't that break the amortized argument?**
+
+The standard amortized argument requires $\Phi_{\text{final}} \ge \Phi_{\text{initial}}$ so that actual cost $\le$ amortized cost. When $\Phi$ can be negative, you instead bound $\Phi_{\text{initial}} - \Phi_{\text{final}}$ explicitly (here, $O(n^2)$) and add that to the amortized total. The result is a one-time startup cost, not a per-operation cost.
+
+**Q: The static finger property says cost is $O(\log|f - i| + 1)$ for *any* fixed $f$. What if $f = i$?**
+
+Then the cost is $O(\log 1) = O(1)$. The $+1$ ensures the bound is always at least constant, since every access takes at least $\Omega(1)$ time.
+
+**Q: Is there a connection between the static optimality bound and compression?**
+
+Yes. The optimal fixed BST for an access sequence with frequencies $p_1, \ldots, p_n$ achieves $\sum_i p_i \log(1/p_i)$, which is the Shannon entropy — exactly the information-theoretic lower bound for a prefix-free code. Splay trees achieving this bound means they adapt to the "compressibility" of the access sequence.
+
+
+## Further reading {#sec-further-reading}
+
+1. **Sleator and Tarjan (1985).** "Self-Adjusting Binary Search Trees." *JACM* 32(3). The original paper: splay trees, static optimality, working set, static finger. <!-- TODO: citation -->
+2. **Cole (2000).** "On the Dynamic Finger Conjecture for Splay Trees. Part II: The Proof." *STOC 2000*. The second half of the 100+ page proof of the dynamic finger property.
+3. **Demaine, Harmon, Iacono, Patrascu (2004).** "Dynamic Optimality — Almost." *FOCS 2004*. Tango trees: $O(\log \log n)$-competitive BST. <!-- TODO: citation -->
+4. **Iacono (2001).** "Alternatives to Splay Trees with O(log n) Worst-Case Access Times." *SODA 2001*. Introduces the unified bound and a non-BST data structure achieving it. <!-- TODO: citation -->
+5. **Derryberry and Sleator (2009).** A BST achieving the unified bound plus $O(m \log \log n)$. <!-- TODO: citation -->
+
+
+## Try it yourself {#sec-exercises}
+
+1. **Zig-zag analysis.** Prove that the amortized cost of a zig-zag step (Case 3) is at most $3(r'(x) - r(x))$. Follow the same template as the zig-zig proof in @sec-case2-proof.
+
+2. **Working set property.** Define $w(i)$ appropriately and use @eq-splay-cost to prove @eq-working-set. (*Hint:* update weights dynamically — set the weight of the most recently accessed item to be larger.)
+
+3. **Splay simulation.** Implement a splay tree in Python. Splay the deepest node of a right-leaning path of 15 nodes. Print the tree (in-order with depths) before and after the splay to verify that the depth roughly halves.
+
+```python
+class Node:
+    def __init__(self, key, left=None, right=None, parent=None):
+        self.key = key
+        self.left = left
+        self.right = right
+        self.parent = parent
+
+def rotate(x):
+    """Rotate x with its parent."""
+    y = x.parent
+    if y is None:
+        return
+    g = y.parent
+    if y.left is x:
+        y.left = x.right
+        if x.right: x.right.parent = y
+        x.right = y
+    else:
+        y.right = x.left
+        if x.left: x.left.parent = y
+        x.left = y
+    x.parent = g
+    y.parent = x
+    if g:
+        if g.left is y: g.left = x
+        else: g.right = x
+
+def splay(x):
+    """Splay x to the root."""
+    while x.parent is not None:
+        y = x.parent
+        z = y.parent
+        if z is None:                        # zig
+            rotate(x)
+        elif (z.left is y) == (y.left is x): # zig-zig
+            rotate(y); rotate(x)
+        else:                                # zig-zag
+            rotate(x); rotate(x)
+    return x
+```
+
+4. **Tango tree gap.** Explain why balanced BSTs give $C = O(\log n)$ in @eq-dynamic-opt. Specifically, show that for any sequence $\sigma$ of $m$ accesses, a balanced BST costs $O(m \log n)$, and $\text{OPT}(\sigma) \ge m$ (each access costs at least 1).
+
+5. **Lower bound on OPT.** Prove that for any access sequence $\sigma$ of $m$ elements from a universe of size $n$, $\text{OPT}(\sigma) \ge m \cdot H(p_1, \ldots, p_n) / \log 3$, where $p_i$ is the fraction of accesses to item $i$ and $H$ is Shannon entropy. (*Hint:* use an information-theoretic argument — each comparison reveals at most 1 bit.)

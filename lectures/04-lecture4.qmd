@@ -1,0 +1,591 @@
+---
+title: "Hashing II: Bloom Filters, Cuckoo Hashing, and Bloomier Filters"
+subtitle: "COMPSCI 224 Lecture 4 — Fall 2014"
+author: "Companion notes by Kun Deng"
+date: today
+abstract: |
+  This chapter completes the linear probing analysis—showing that 5-wise
+  independence suffices via a clever binary-tree union-bound—then covers
+  three data structures that push hashing beyond dictionaries: Bloom
+  filters for approximate membership in $n \log(1/\varepsilon)$ bits,
+  cuckoo hashing for worst-case $O(1)$ lookups with two hash functions,
+  and bloomier filters for the retrieval problem using cuckoo graphs and
+  XOR queries.
+---
+
+## Why this lecture matters
+
+The previous lecture set up the machinery of $k$-wise independence and
+the moment method.  This lecture *deploys* that machinery on linear
+probing, then pivots to three data structures—Bloom filters, cuckoo
+hashing, and bloomier filters—that show hashing is about far more than
+dictionaries.  Each structure trades something (exactness, extra hash
+functions, static preprocessing) for a sharp gain in space or time.
+
+::: {.callout-tip title="30-second story"}
+1. A binary-tree trick eliminates the factor-of-$k$ union bound in the
+   linear probing analysis, dropping the independence requirement from
+   7-wise to 5-wise.
+2. Bloom filters solve approximate membership in $n\log(1/\varepsilon)$
+   bits using $\log(1/\varepsilon)$ independent hash functions.
+3. Cuckoo hashing maintains a dictionary with worst-case $O(1)$ lookups
+   and expected $O(1)$ insertions using two hash functions and a "kick
+   out" strategy.
+4. The *cuckoo graph*—vertices for array cells, edges for items—is the
+   key analytic object: insertion works smoothly when the graph is
+   acyclic.
+5. Bloomier filters solve the *retrieval problem* (store an $r$-bit
+   value per key in $nr$ bits) by filling an acyclic cuckoo graph top-down
+   with XOR constraints.
+:::
+
+
+## Finishing linear probing {#sec-lp-finish}
+
+### Recap: the 7-wise argument {#sec-7wise-recap}
+
+From last lecture, the expected number of probes to insert $x$ satisfies
+
+$$
+\mathbb{E}[\text{probes}]
+\;\le\;
+\sum_{k=1}^{\infty} k \cdot \max_{\substack{I:\;|I|=k\\ h(x)\in I}}
+  \Pr[I \text{ is full}],
+$$ {#eq-lp-sum-recap}
+
+where an interval $I$ is *full* if $L(I) \ge |I|$ (at least $|I|$ items
+hash into $I$).  With $m = 2n$, the expected number of items landing in
+a length-$k$ interval is $k/2$, so being full means deviating from the
+mean by $k/2$.
+
+Raising to the sixth power and applying Markov:
+
+$$
+\Pr[I \text{ full}]
+\;\le\; \frac{\mathbb{E}\!\bigl[(L(I)-\mathbb{E}[L(I)])^6\bigr]}{(k/2)^6}.
+$$
+
+Under 6-wise independence (plus one for conditioning on $h(x)$, giving
+7 total), the sixth central moment is $O(k^3)$, so
+$\Pr[I \text{ full}] = O(1/k^3)$.  The factor of $k$ in @eq-lp-sum-recap
+cancels one power, and $\sum 1/k^2$ converges.
+
+### Bounding the sixth moment via symmetrization {#sec-symmetrization}
+
+Define indicator variables $X_i = \mathbf{1}[h(i) \in I]$ so that
+$L(I) = \sum_{i \in S} X_i$.  You need to bound
+
+$$
+\mathbb{E}\!\Bigl[\Bigl(\sum_i X_i - \mathbb{E}\bigl[\sum_i X_i\bigr]\Bigr)^{\!6}\;\Bigr].
+$$ {#eq-sixth-moment}
+
+Work with the *$p$-norm* of a random variable:
+$\|Z\|_p = \bigl(\mathbb{E}[|Z|^p]\bigr)^{1/p}$.  Two classical
+inequalities help.
+
+::: {.callout-note title="Tools from analysis"}
+**Minkowski's inequality.**
+$\|\cdot\|_p$ is a norm for $p \ge 1$: it satisfies the triangle
+inequality $\|Z_1 + Z_2\|_p \le \|Z_1\|_p + \|Z_2\|_p$.
+
+**Jensen's inequality.**
+If $f$ is convex, $f\bigl(\mathbb{E}[Z]\bigr) \le \mathbb{E}[f(Z)]$.
+In particular, $|\cdot|^p$ is convex for $p \ge 1$, so you can pull an
+expectation *outside* a $p$-th power at the cost of an inequality.
+:::
+
+**The symmetrization trick.**
+Let $X_i'$ be an independent copy of $X_i$ (same distribution,
+independent of $X_i$).  Then $\mathbb{E}[X_i'] = \mathbb{E}[X_i]$, so
+
+$$
+\Bigl\|\sum_i (X_i - \mathbb{E}[X_i])\Bigr\|_6
+= \Bigl\|\sum_i \bigl(X_i - \mathbb{E}[X_i']\bigr)\Bigr\|_6
+= \Bigl\|\mathbb{E}_{X'}\bigl[\sum_i (X_i - X_i')\bigr]\Bigr\|_6.
+$$
+
+By Jensen (pulling $\mathbb{E}_{X'}$ outside the convex $|\cdot|^6$):
+
+$$
+\le \Bigl\|\sum_i (X_i - X_i')\Bigr\|_6,
+$$
+
+where the norm is now over both $X$ and $X'$.  Each $X_i - X_i'$ is a
+*symmetric* random variable (its distribution is unchanged by negation),
+so you may insert independent random signs $\sigma_i \in \{-1,+1\}$
+without changing the distribution:
+
+$$
+\Bigl\|\sum_i (X_i - X_i')\Bigr\|_6
+= \Bigl\|\sum_i \sigma_i (X_i - X_i')\Bigr\|_6
+\le 2\Bigl\|\sum_i \sigma_i X_i\Bigr\|_6,
+$$ {#eq-symmetrized}
+
+where the last step uses the triangle inequality (Minkowski) to separate
+$X_i$ and $X_i'$.
+
+::: {.callout-tip title="Why symmetrize?"}
+Expand $\bigl(\sum_i \sigma_i X_i\bigr)^6 = \sum_{i_1,\dots,i_6}
+\sigma_{i_1}\cdots\sigma_{i_6}\, X_{i_1}\cdots X_{i_6}$.  Taking
+expectations over the $\sigma_i$'s, any monomial where some index
+appears an *odd* number of times vanishes (since
+$\mathbb{E}[\sigma^{\text{odd}}]=0$).  Only monomials where every
+distinct index appears an *even* number of times survive.  For the sixth
+power, this means at most three distinct indices, each appearing
+twice—giving a dominant term of $O(n^3 p^3)$.
+:::
+
+Each $X_i = 1$ with probability $p = |I|/m = k/(2n)$, so
+$p^3 = k^3/(8n^3)$ and the dominant term is
+$O(n^3 \cdot k^3/n^3) = O(k^3)$.
+
+Raising @eq-symmetrized to the sixth power: the sixth central moment is
+$O(k^3)$, confirming that $\Pr[I \text{ full}] = O(1/k^3)$.
+
+### The 5-wise trick: a binary tree argument {#sec-5wise}
+
+The 7-wise proof pays a factor of $k$ in @eq-lp-sum-recap by union-bounding
+over $k$ intervals of length $k$ containing $h(x)$.  Pagh, Pagh, and
+Ružić eliminate this factor.
+
+**Key lemma (refined).**
+If inserting $x$ takes $k$ probes, there are $k$ full intervals
+containing $h(x)$, each of a *different* length.
+
+This lets you write the expected probes as
+
+$$
+\sum_{k=1}^{\infty}
+\Pr[\exists \text{ full interval of length } k \text{ containing } h(x)].
+$$ {#eq-lp-refined}
+
+Now argue that each such full interval forces a "dangerous" node in a
+perfect binary tree built over the array.
+
+<!-- TikZ: A perfect binary tree over an array of 16 cells.  Height labels on the left (0 through 4).  One interval of length 8 is highlighted at the bottom, and the 5 tree nodes two levels lower that span it are circled. -->
+
+**Construction.**
+Build a complete binary tree over the $m$ array cells.  A node at
+height $h$ represents an interval of $2^h$ cells.  Call a node
+*dangerous* if at least $\tfrac{3}{4} \cdot 2^h$ items hash into its
+interval (expected: $\tfrac{1}{2} \cdot 2^h$ when $m = 2n$, so
+"dangerous" means $1.5\times$ the expectation).
+
+**Spanning lemma.**
+Any interval $I$ of length $k$ (where $2^h \le k < 2^{h+1}$) is spanned
+by between 4 and 9 nodes at height $h-2$.  If $I$ is full, at least one
+of these spanning nodes must be dangerous.
+
+*Proof sketch.*  The spanning nodes have length $2^{h-2} \ge k/8$.
+Together, their first four cover at least $3 \cdot 2^{h-2} + 1$ items
+that all hashed at or after the start of $I$.  By pigeonhole, one of
+the four has load $\ge \tfrac{3}{4} \cdot 2^{h-2}$.
+
+::: {.callout-important title="Why this eliminates the factor of $k$"}
+All length-$k$ intervals containing $h(x)$ fit inside a window of
+length $2k - 2$, which is spanned by $O(1)$ nodes at height $h-2$.
+So instead of union-bounding over $k$ intervals, you union-bound over
+$O(1)$ tree nodes.
+:::
+
+Now apply the *fourth* moment (not sixth):
+
+$$
+\Pr[\text{node is dangerous}]
+\le \frac{\mathbb{E}\bigl[(L(I') - \mathbb{E}[L(I')])^4\bigr]}
+         {(|I'|/4)^4},
+$$
+
+where $I'$ is the node's interval.  By the same symmetrization argument,
+the fourth moment is $O(|I'|^2) = O(k^2)$, and the denominator is
+$\Theta(k^4)$, giving $O(1/k^2)$.
+
+Summing $\sum_{k} O(1/k^2) = O(1)$.  Including the conditioning on
+$h(x)$, the total independence needed is $4 + 1 = 5$.
+
+::: {.callout-note title="Aside (mine, not the lecturer's)"}
+Pǎtraşcu and Thorup (ICALP 2010) constructed an explicit 4-wise
+independent family where linear probing requires $\Omega(\log n)$
+expected probes, confirming that 5 is tight.  Interestingly, *simple
+tabulation hashing*—which is only 3-wise independent but has additional
+structural properties—also achieves $O(1)$ expected time.
+:::
+
+
+## Approximate membership: Bloom filters {#sec-bloom}
+
+### From a bit array to a Bloom filter {#sec-bit-array}
+
+**Problem (membership).**
+Maintain a set $S \subseteq U$ under insertions.  Support queries
+"is $x \in S$?" with:
+
+- *No false negatives:* $x \in S \Rightarrow$ query returns YES
+  with probability 1.
+- *Bounded false positives:* $x \notin S \Rightarrow$ query returns YES
+  with probability $\le \varepsilon$.
+
+**Baseline: single bit array.**
+Choose a hash function $h : U \to \{0,\dots,m{-}1\}$ and maintain a
+bit array $A[0..m{-}1]$.  Insert: set $A[h(x)] \gets 1$.  Query: return
+$A[h(x)]$.
+
+<!-- TikZ: A bit array of length m.  Three items from S hash to different positions (bits set to 1).  A query item y not in S collides with one of them, illustrating a false positive. -->
+
+If $x \in S$, we set $A[h(x)] = 1$, so no false negative.  If
+$x \notin S$, a false positive occurs iff some $y \in S$ satisfies
+$h(y) = h(x)$.  By a union bound:
+
+$$
+\Pr[\text{false positive}]
+\le \sum_{y \in S} \Pr[h(x)=h(y)]
+= \frac{n}{m}.
+$$
+
+Setting $m = 2n$ gives a false positive rate of $1/2$.
+
+::: {.callout-warning title="Deterministic answers"}
+The data structure is randomised (through $h$), but once built, queries
+are deterministic.  Querying the same $x$ twice gives the same answer.
+To reduce the false positive rate, you cannot simply repeat the query—you
+need independent copies.
+:::
+
+### Reducing the false positive rate {#sec-bloom-boost}
+
+**Bloom filter (Bloom, 1970).**
+Use $d = \lceil\log_2(1/\varepsilon)\rceil$ independent hash functions
+$h_1, \dots, h_d$, each mapping into a separate bit array of length
+$m = 2n$.
+
+- **Insert $x$:** for each $j$, set $A_j[h_j(x)] \gets 1$.
+- **Query $x$:** return YES iff $A_j[h_j(x)] = 1$ for *all* $j$.
+
+A false positive requires a collision in *every* array independently,
+so
+
+$$
+\Pr[\text{false positive}]
+\le (1/2)^d = \varepsilon.
+$$
+
+**Space:** $d$ arrays of $2n$ bits each $= 2n\lceil\log_2(1/\varepsilon)\rceil$
+bits $= O(n \log(1/\varepsilon))$ bits.
+
+**Time:** $O(\log(1/\varepsilon))$ hash evaluations per operation.
+
+**Independence:** Each hash function only needs 2-wise independence
+(the false-positive analysis uses only pairwise collision probabilities).
+
+::: {.callout-tip title="Practical note"}
+More sophisticated variants (counting Bloom filters, cuckoo filters)
+support deletions and achieve tighter constants.  The
+information-theoretic lower bound for the membership problem with
+false-positive rate $\varepsilon$ is $n \log_2(1/\varepsilon)$ bits,
+so Bloom filters are optimal up to a constant factor.
+:::
+
+
+## Cuckoo hashing {#sec-cuckoo}
+
+Cuckoo hashing (Pagh and Rodler, *J. Algorithms*, 2004) achieves
+*worst-case* $O(1)$ lookup and *expected* $O(1)$ insertion.
+
+**Setup.**
+Maintain an array $A[0..m{-}1]$ with $m = cn$ (e.g., $c=4$) and two
+independent random hash functions $g, h : U \to \{0,\dots,m{-}1\}$.
+Each item $x$ has two candidate cells: $A[g(x)]$ and $A[h(x)]$.
+
+**Lookup.**
+Check $A[g(x)]$ and $A[h(x)]$.  If $x$ is stored in either, return its
+value.  Worst-case time: $O(1)$.
+
+**Insertion.**
+1. Place $x$ in $A[g(x)]$.
+2. If some $x'$ was already there, $x'$ is "kicked out."  Move $x'$ to
+   its *other* candidate cell (whichever of $g(x')$, $h(x')$ it was
+   *not* using).
+3. This may kick out another item, which moves to *its* other cell, and
+   so on.
+4. If the chain of evictions exceeds $c' \log n$ steps, declare failure:
+   pick fresh $g, h$ and rebuild the entire table.
+
+<!-- TikZ: An array with cells.  Item x is inserted at g(x), kicking out x' to h(x'), which kicks out x'' to g(x''), which finds an empty cell.  Arrows show the chain of evictions. -->
+
+::: {.callout-note title="Why 'cuckoo'?"}
+The cuckoo bird lays its eggs in other birds' nests, evicting the
+original occupants—just as each new item may displace existing items
+from their cells.
+:::
+
+### The cuckoo graph {#sec-cuckoo-graph}
+
+The analysis hinges on a random graph.
+
+**Definition.**
+The *cuckoo graph* $G = (V, E)$ has $m$ vertices (one per array cell)
+and $n$ edges (one per item $x \in S$): item $x$ contributes edge
+$(g(x), h(x))$.  The graph may have parallel edges and self-loops.
+
+<!-- TikZ: A small cuckoo graph with 8 vertices and 5 edges.  One connected component is a tree; another has a single cycle.  Vertices are array cells; edges are labeled with item names. -->
+
+**Key observations:**
+
+- *Insertion succeeds quickly iff the connected component of $x$'s edge
+  is a tree or a unicyclic graph.*  In a tree, the eviction chain ends
+  at a leaf (empty cell).  A single cycle means the chain loops but
+  can still settle.  Two or more cycles in a component make insertion
+  fail.
+
+- *If the cuckoo graph is a forest (no cycles), every item can be placed.*
+  In a forest with $n$ edges and $m$ vertices, every component has more
+  vertices than edges, guaranteeing enough empty cells.
+
+**Probability of cycles.**
+For $m = cn$ with $c$ a sufficiently large constant, the probability that
+the cuckoo graph contains *any* cycle is at most $1/2$.
+
+::: {.callout-important}
+When insertion fails (chain too long), rebuilding with fresh hash
+functions succeeds in expected $O(n)$ time.  Because failure probability
+per insertion is $O(1/n)$, the *amortised* expected cost of rebuilds is
+$O(1)$ per insertion, so the total expected insertion time remains
+$O(1)$.
+:::
+
+
+## Bloomier filters and the retrieval problem {#sec-bloomier}
+
+### The retrieval problem {#sec-retrieval}
+
+**Problem.**
+Given a static set $S$ of $n$ items, each associated with an $r$-bit
+string $v(x)$, build a data structure using $O(nr)$ bits such that:
+
+- Query $x \in S$: return $v(x)$ correctly.
+- Query $x \notin S$: return an arbitrary $r$-bit string (no guarantee).
+
+This is weaker than a dictionary (which must also detect non-members)
+but requires far less space: $nr$ bits instead of $n$ words.
+
+### Construction via cuckoo hashing {#sec-bloomier-construction}
+
+Bloomier filters (Chazelle, Kilian, Rubinfeld, and Tal, 2004) use the
+cuckoo graph in a static, offline setting.
+
+**Step 1: Build an acyclic cuckoo graph.**
+Choose random $g, h : U \to \{0,\dots,m{-}1\}$.  Build the cuckoo
+graph.  If it contains a cycle, pick new $g, h$ and retry.  Since
+$\Pr[\text{cycle}] \le 1/2$, the expected number of attempts is 2.
+
+**Step 2: Root the forest and assign ownership.**
+Root each tree arbitrarily.  Each item $x$ (an edge) *owns* its deeper
+endpoint.  Since the graph is a forest, no two items own the same vertex.
+
+<!-- TikZ: A small rooted forest with 3 trees.  Each edge is labeled with an item x_i.  The deeper endpoint of each edge is circled and labeled "owned by x_i".  Roots store 0^r. -->
+
+**Step 3: Fill in $r$-bit strings top-down.**
+Allocate an array $A[0..m{-}1]$ of $r$-bit strings.  Set $A[v] = 0^r$
+for every root.  Process non-root vertices from top to bottom.  When you
+reach the vertex $v$ owned by item $x$:
+
+- $x$'s edge connects $v$ to its parent $u$ (which has already been
+  filled in).
+- Set $A[v] = A[u] \oplus v(x)$, where $\oplus$ is bitwise XOR.
+
+**Query.**
+To retrieve the value for item $x$, compute $A[g(x)] \oplus A[h(x)]$.
+If $x \in S$, one of $g(x), h(x)$ is $x$'s owned vertex $v$ and the
+other is its parent $u$.  By construction,
+$A[u] \oplus A[v] = A[u] \oplus (A[u] \oplus v(x)) = v(x)$.
+
+::: {.callout-warning title="Non-members get garbage"}
+If $x \notin S$, the query returns $A[g(x)] \oplus A[h(x)]$—an
+arbitrary $r$-bit string with no meaningful guarantee.  This is the
+retrieval problem's defining trade-off: you save space by not storing
+keys, at the cost of being unable to detect imposters.
+:::
+
+::: {.callout-note title="Aside (mine, not the lecturer's)"}
+A student observed that you could instead store $v(x)$ directly in
+$x$'s owned vertex—but then queries would need to know *which* of
+$g(x), h(x)$ is the owned vertex.  That requires solving a 1-bit
+retrieval problem (store one bit per item indicating the deeper
+endpoint), creating a circular dependency.  The XOR trick avoids this
+elegantly: $A[g(x)] \oplus A[h(x)]$ is the same regardless of which
+endpoint is deeper.
+:::
+
+
+## Cheat sheet
+
+::: {.callout-important title="Lecture 4 — key results"}
+**Linear probing (5-wise).**
+Pagh–Pagh–Ružić binary tree trick: union-bound over $O(1)$ tree nodes
+(not $k$ intervals) $\Rightarrow$ fourth moment suffices
+$\Rightarrow$ 5-wise independence gives $O(1)$ expected time.
+4-wise is insufficient (Pǎtraşcu–Thorup counterexample).
+
+**Symmetrization.**
+Replace $X_i - \mu$ with $\sigma_i X_i$ (random signs).  Only
+monomials with all-even exponents survive, simplifying moment
+computations.  Sixth moment of $\sum X_i$: dominant term is $O(n^3 p^3)$
+from three distinct indices appearing twice each.
+
+**Bloom filter.**
+Approximate membership in $O(n\log(1/\varepsilon))$ bits.
+$d = \log_2(1/\varepsilon)$ independent hash functions into $d$ bit
+arrays of size $2n$.  Query: AND all lookups.  2-wise independence
+suffices per hash function.
+
+**Cuckoo hashing.**
+Two hash functions $g, h$.  Worst-case $O(1)$ lookup (check two cells).
+Expected $O(1)$ insertion (eviction chain + rare rebuilds).  Cuckoo
+graph: $m$ vertices, $n$ edges; acyclicity $\Rightarrow$ all items fit.
+
+**Bloomier filter (retrieval).**
+Static, $O(nr)$ bits.  Build acyclic cuckoo graph, root forests, fill
+$r$-bit strings top-down via XOR.  Query: $A[g(x)] \oplus A[h(x)]$.
+Non-members get arbitrary output.
+:::
+
+
+## FAQ — questions students actually asked
+
+**Q: Why do you introduce random signs in the symmetrization trick?
+Can't you just expand the sixth power directly?**
+You can, but without symmetrization you must track cancellations
+between positive and negative monomials arising from the centered
+variable $X_i - \mathbb{E}[X_i]$.  Symmetrization makes every monomial
+with an odd-powered index vanish automatically (since
+$\mathbb{E}[\sigma^{\text{odd}}] = 0$), leaving only the all-even
+monomials.  This turns an algebraic cancellation problem into a
+combinatorial counting problem.
+
+**Q: For Bloom filters, if I query the same element twice, do I get
+the same answer?**
+Yes.  The hash functions are fixed once the data structure is built.
+The randomness is in the *choice* of hash functions, not in the query
+procedure.  To reduce the false positive rate, you cannot repeat
+queries—you need independent data structures with different hash
+functions.
+
+**Q: In the cuckoo graph, can you have two edges between the same pair
+of vertices?**
+Yes—the cuckoo graph is a multigraph.  If two items $x, y$ satisfy
+$g(x) = g(y)$ and $h(x) = h(y)$ (or $g(x) = h(y)$ and $h(x) = g(y)$),
+they produce parallel edges.  You can also get self-loops if
+$g(x) = h(x)$ for some item $x$.
+
+**Q: Does cuckoo hashing break immediately if $g(x') = h(x')$ for
+some item?**
+If $g(x') = h(x')$, then $x'$ has only one candidate cell.  If $x'$
+gets kicked out, it would be sent back to the same cell, creating an
+immediate cycle.  This triggers a rebuild.  But self-loops are rare:
+$\Pr[g(x) = h(x)] = 1/m$, and by a union bound over $n$ items, the
+probability of *any* self-loop is $n/m < 1$ for $m > n$.
+
+**Q: For bloomier filters, why use XOR instead of just storing the value
+at the owned vertex?**
+If you stored $v(x)$ at the owned vertex, the query would need to know
+*which* of $g(x), h(x)$ is the deeper node.  You don't store the keys,
+so you can't look them up to determine depth.  Answering "which
+endpoint is deeper?" is itself a 1-bit retrieval problem—a circular
+dependency.  XOR sidesteps this: $A[g(x)] \oplus A[h(x)]$ is
+order-independent.
+
+**Q: What independence do Bloom filters need?**
+Each of the $d$ hash functions only needs 2-wise independence.  The
+false-positive analysis for a single array uses a union bound over
+pairwise collisions $\Pr[h(x) = h(y)] = 1/m$, which requires only
+that each pair of hash values is independent.
+
+
+## Further reading
+
+1. **Pagh, Pagh, Ružić (2009).**  "Linear probing with constant
+   independence."  *SIAM J. Comput.* 39(3).  The 5-wise independence
+   proof for linear probing.
+2. **Bloom (1970).**  "Space/time trade-offs in hash coding with
+   allowable errors."  *Commun. ACM* 13(7).  The original Bloom filter.
+3. **Pagh & Rodler (2004).**  "Cuckoo hashing."  *J. Algorithms* 51(2).
+   The cuckoo hashing scheme and its analysis.
+4. **Chazelle, Kilian, Rubinfeld, Tal (2004).**  "The Bloomier filter:
+   an efficient data structure for static support lookup tables."
+   *SODA 2004*.  Bloomier filters for the retrieval problem.
+5. **Thorup (2013).**  "Simple tabulation, fast expanders, double
+   tabulation, and high independence."  *FOCS 2013*.  Fast $k$-wise
+   independent families via tabulation.
+   <!-- TODO: verify exact title and citation -->
+6. **Dietzfelbinger et al. (1997).**  "A reliable randomized algorithm
+   for the closest-pair problem" (contains the multiply-shift hashing
+   scheme).  Pairwise independent hashing without modular arithmetic.
+   <!-- TODO: verify this is the correct paper for multiply-shift -->
+
+
+## Try it yourself
+
+1. **Symmetrization warm-up.**
+   Let $X_1, \dots, X_n$ be independent $\{0,1\}$ random variables with
+   $\mathbb{E}[X_i] = p$.  Expand $\mathbb{E}\bigl[(\sum \sigma_i
+   X_i)^4\bigr]$ explicitly.  Identify which monomials survive and
+   show the result is $O(n^2 p^2)$.
+
+2. **Bloom filter experiment.**
+   Build a Bloom filter with $n = 10{,}000$, $m = 20{,}000$, and
+   $d \in \{1, 3, 7, 10, 20\}$.  For each $d$, measure the empirical
+   false positive rate over $10^5$ random non-member queries.  Plot the
+   measured rate against the theoretical $(1/2)^d$.
+
+```python
+import numpy as np
+
+def bloom_filter_experiment(n, m, d, num_queries, seed=42):
+    """Measure empirical false positive rate of a Bloom filter."""
+    rng = np.random.default_rng(seed)
+    p = 200_003  # prime >= m
+
+    # Generate hash function coefficients (2-wise: h(x) = (a*x + b) mod p mod m)
+    coeffs = rng.integers(0, p, size=(d, 2))
+
+    def hash_val(x, a, b):
+        return ((a * x + b) % p) % m
+
+    # Insert n items
+    items = rng.integers(0, 10**9, size=n)
+    arrays = np.zeros((d, m), dtype=bool)
+    for j in range(d):
+        a, b = int(coeffs[j, 0]), int(coeffs[j, 1])
+        for x in items:
+            arrays[j, hash_val(int(x), a, b)] = True
+
+    # Query non-members
+    non_members = rng.integers(10**9, 2 * 10**9, size=num_queries)
+    false_positives = 0
+    for x in non_members:
+        if all(arrays[j, hash_val(int(x), int(coeffs[j,0]), int(coeffs[j,1]))]
+               for j in range(d)):
+            false_positives += 1
+
+    return false_positives / num_queries
+
+for d in [1, 3, 7, 10, 20]:
+    rate = bloom_filter_experiment(10_000, 20_000, d, 100_000)
+    print(f"d={d:2d}  measured={rate:.6f}  theoretical={0.5**d:.6f}")
+```
+
+3. **Cuckoo hashing.**
+   Implement cuckoo hashing with $m = 4n$ and two random hash functions.
+   Insert $n = 10{,}000$ random keys.  Count the average eviction chain
+   length per insertion and the number of full rebuilds.
+
+4. **Binary tree trick.**
+   Draw the perfect binary tree for an array of size 16.  Identify the
+   $O(1)$ nodes at height 1 that span the interval $[3, 10]$.  Verify
+   that there are between 4 and 9 of them.
+
+5. **Open-ended.**
+   The bloomier filter construction requires the cuckoo graph to be
+   acyclic.  What if you allowed *one* cycle per component (unicyclic
+   graphs)?  Can you still fill in the XOR values consistently?  Under
+   what condition on the cycle?

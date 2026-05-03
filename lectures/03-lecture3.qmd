@@ -1,0 +1,579 @@
+---
+title: "Hashing I: Load Balancing, Independence, and Linear Probing"
+subtitle: "COMPSCI 224 Lecture 3 — Fall 2014"
+author: "Companion notes by Kun Deng"
+date: today
+abstract: |
+  Hashing converts the unpredictability of random functions into practical
+  guarantees about load balancing, collision avoidance, and dictionary
+  operations.  This chapter develops the balls-and-bins framework, proves
+  that the maximum load is $O(\log n/\log\log n)$ via both the Chernoff
+  bound and a direct counting argument, introduces $k$-wise independent
+  hash families built from low-degree polynomials, and sets up the analysis
+  of linear probing through full intervals and the moment method.
+---
+
+## Why this lecture matters
+
+Hashing is one of the most practically important ideas in computer science,
+yet its theoretical guarantees depend on subtle probabilistic reasoning.
+Understanding *how much* independence a hash function needs—and what
+breaks when you have less—is the key to designing efficient, space-conscious
+data structures.  This chapter builds the machinery you will use for the
+rest of the hashing unit.
+
+::: {.callout-tip title="30-second story"}
+1. A hash function maps items from a large universe into a small array;
+   collisions are inevitable but controllable.
+2. Throwing $n$ balls into $n$ bins, the maximum load is
+   $\Theta(\log n / \log\log n)$ with high probability.
+3. Full independence is expensive to store; $k$-wise independent families
+   built from degree-$(k{-}1)$ polynomials need only $O(k\log u)$ bits.
+4. Hash tables with chaining give expected $O(1)$ operations using only
+   2-wise independence.
+5. Linear probing exploits cache prefetching for speed, but its analysis
+   demands 5-wise independence (or more).
+6. The *moment method*—raising a deviation to a high even power and
+   applying Markov—is the main analytic tool.
+:::
+
+
+## Hashing: the setup {#sec-hashing-setup}
+
+Fix a universe $U = \{0, 1, \dots, u-1\}$ and an array of size $m$.
+A *hash family* $\mathcal{H}$ is a collection of functions
+$h : U \to \{0, 1, \dots, m-1\}$.  You draw one $h$ at random from
+$\mathcal{H}$, and then every item $i$ in some set $S \subseteq U$
+($|S|=n$) lands in cell $h(i)$.
+
+<!-- TikZ: A universe of n items on the left, arrows through a hash function h, landing in an array of m cells on the right.  Two items collide in the same cell. -->
+
+The goal: choose $\mathcal{H}$ so that a random $h$ "behaves nicely"
+on $S$—few collisions, balanced load, fast lookups—while keeping the
+description of $h$ small.
+
+Two items $i, j$ *collide* when $h(i) = h(j)$.  Since $|U|$ is
+typically much larger than $m$, collisions are inevitable by pigeonhole.
+The question is never "can we avoid collisions?" but "how bad do
+collisions get, and what does the hash family need to guarantee?"
+
+Throughout this chapter, the computational model is the word RAM with
+word size $w \ge \log u$.  Evaluating $h$ takes $O(1)$ time once the
+coefficients are stored.
+
+
+## Load balancing and balls into bins {#sec-load-balancing}
+
+Suppose $n$ jobs arrive online, each with a job ID in $U$, and must be
+assigned to one of $m$ identical machines.  If you know all jobs ahead
+of time, round-robin assignment gives each machine exactly $n/m$ jobs.
+But if jobs arrive dynamically and you lack a global view of machine
+loads, you need a *local* rule.
+
+The simplest local rule: hash.  When job $j$ arrives, send it to
+machine $h(j)$.  Each machine processes whatever lands in its bin.
+
+This is the *balls-and-bins* random process: $n$ balls thrown
+independently and uniformly into $m$ bins.  The question is how
+overloaded the fullest bin gets.  Ideally each bin receives $n/m$ balls,
+but randomness guarantees some deviation.
+
+### The Chernoff bound {#sec-chernoff}
+
+You need a tail bound.  Let $X_1, \dots, X_n$ be independent
+$\{0,1\}$-valued random variables with $\mathbb{E}[X_i] = p_i$.
+Set $X = \sum_i X_i$.
+
+$$
+\Pr\!\bigl[X \ge (1+\delta)\,\mathbb{E}[X]\bigr]
+\;\le\;
+\left(\frac{e^\delta}{(1+\delta)^{1+\delta}}\right)^{\!\mathbb{E}[X]}
+$$ {#eq-chernoff}
+
+::: {.callout-tip title="Proof sketch"}
+The argument starts with **Markov's inequality**: for a non-negative
+random variable $Y$ and any $\lambda > 0$,
+$\Pr[Y \ge \lambda] \le \mathbb{E}[Y]/\lambda$.
+
+Apply Markov to the *moment-generating function*.
+For any $t > 0$,
+$$
+\Pr[X \ge \lambda]
+= \Pr\!\bigl[e^{tX} \ge e^{t\lambda}\bigr]
+\le e^{-t\lambda}\,\mathbb{E}\!\bigl[e^{tX}\bigr].
+$$
+Independence lets you factor $\mathbb{E}[e^{tX}]$ into a product
+$\prod_i \mathbb{E}[e^{tX_i}]$.  Each factor can be bounded using the
+constraint $X_i \in \{0,1\}$.  Optimising over $t$ (the right choice
+turns out to be $t = \ln(1+\delta)$) gives @eq-chernoff.
+
+This "exponentiate, apply Markov, optimise" pattern is the template
+for all exponential tail bounds.
+:::
+
+### Max load is $O(\log n / \log\log n)$ {#sec-max-load}
+
+Focus on the case $m = n$ (one machine per job on average).
+Fix a machine $t$ and define $X_i = \mathbf{1}[h(i) = t]$.
+Then $X = \sum_i X_i$ counts the jobs assigned to machine $t$,
+and $\mathbb{E}[X] = 1$.
+
+Apply @eq-chernoff with $\delta = c\log n / \log\log n$ for a suitable
+constant $c$.  Since $\mathbb{E}[X]=1$, the bound becomes roughly
+$(e/\delta)^\delta$.  You want $(e/k)^k \le 1/\operatorname{poly}(n)$,
+which forces $k = \Theta(\log n / \log\log n)$.
+
+::: {.callout-note title="Why $k^k = \operatorname{poly}(n)$ iff $k = \Theta(\log n/\log\log n)$"}
+Take logs: $k \ln k = c' \ln n$.  If $k = \alpha \log n / \log\log n$,
+then $k \ln k \approx \alpha (\log n / \log\log n)(\ln\log n) \approx
+\alpha \ln n$.  So $\alpha = c'$ works.
+:::
+
+A union bound over all $n$ machines contributes a factor of $n$,
+leaving the failure probability at $1/n^{c'-1}$:
+
+$$
+\Pr\!\bigl[\exists\;\text{machine with load} > c\,\tfrac{\log n}{\log\log n}\bigr]
+\;\le\; \frac{1}{n^{c'-1}}.
+$$ {#eq-max-load}
+
+### A simpler proof via counting {#sec-counting-proof}
+
+The Chernoff bound is overkill here—it requires full independence and
+heavy machinery.  A direct combinatorial argument needs nothing beyond
+a union bound and a factorial estimate, and it reveals exactly how much
+independence is required.
+
+By symmetry, every machine has the same load distribution.  By a union
+bound over $n$ machines, $\Pr[\exists \text{ overloaded machine}] \le
+n \cdot \Pr[\text{machine 1 is overloaded}]$.  Focus on machine 1.
+
+The probability that machine 1 receives $\ge k$ jobs equals the
+probability that *some* subset of $k$ jobs all land there:
+
+$$
+\Pr[\text{machine 1 gets} \ge k]
+\;\le\; \binom{n}{k}\frac{1}{n^k}
+\;\le\; \frac{1}{k!}
+\;\le\; \frac{1}{(k/2)^{k/2}}.
+$$ {#eq-counting-proof}
+
+The last step uses $k! \ge (k/2)^{k/2}$.  Setting $(k/2)^{k/2}$ to a
+polynomial in $n$ again forces $k = \Theta(\log n / \log\log n)$.
+
+::: {.callout-important}
+This proof uses only $k$-wise independence, not full independence—a
+crucial observation for the next section.
+:::
+
+
+## $k$-wise independence {#sec-k-wise}
+
+The counting proof (@sec-counting-proof) decomposed the probability
+into products of $k$ indicator random variables.  Full independence was
+never needed; all that mattered was that any $k$ hash evaluations
+behave independently.  This motivates a weaker—and cheaper—notion of
+independence.
+
+**Definition.**
+Random variables $X_1, \dots, X_n$ are *$k$-wise independent* if for
+every set of $k$ indices $i_1 < i_2 < \cdots < i_k$, the variables
+$X_{i_1}, \dots, X_{i_k}$ are mutually independent.
+
+A hash family $\mathcal{H}$ is *$k$-wise independent* if the random
+variables $h(0), h(1), \dots, h(u{-}1)$—induced by drawing
+$h \sim \mathcal{H}$ uniformly—are $k$-wise independent.
+
+At first glance, $k$-wise independence might seem like the same thing
+as full independence—after all, mutual independence means *every*
+subset is independent.  The difference is quantitative: $k$-wise
+independence only constrains subsets of size *up to* $k$, not all
+subsets.  A family can be 2-wise independent (pairwise) without being
+3-wise independent.
+
+### Polynomial hash families {#sec-poly-hash}
+
+The payoff of $k$-wise independence is *space*.  A fully random hash
+function requires $u \log m$ bits—one entry per universe element.  A
+$k$-wise independent family built from polynomials needs only
+$k \log u$ bits.
+
+**Example 1.**
+The family of *all* functions $U \to \{0,\dots,m{-}1\}$ is $k$-wise
+independent for every $k \le u$.  But storing a random member requires
+$u \log m$ bits—prohibitively expensive.
+
+**Example 2.**
+Let $u = m = p$ (a prime).  Define
+$$
+\mathcal{H} = \Bigl\{h(x) = \textstyle\sum_{i=0}^{k-1} a_i x^i \bmod p
+  \;\Big|\; a_0, \dots, a_{k-1} \in \{0,\dots,p{-}1\}\Bigr\}.
+$$ {#eq-poly-family}
+
+This is a $k$-wise independent family.  Storing $h$ requires only $k$
+coefficients, i.e., $k \log p$ bits.
+
+::: {.callout-tip title="Why polynomial interpolation implies $k$-wise independence"}
+Fix any $k$ distinct points $x_1, \dots, x_k$ and any target values
+$y_1, \dots, y_k$.  By polynomial interpolation over $\mathbb{F}_p$,
+there is *exactly one* degree-$(k{-}1)$ polynomial mapping $x_j \mapsto
+y_j$ for each $j$.  Since there are $p^k$ polynomials and $p^k$ target
+vectors, each target vector arises with probability exactly $1/p^k$—the
+same as fully random evaluation.
+:::
+
+::: {.callout-warning title="Why only $k$-wise, not fully independent?"}
+Given any $k$ evaluations of a degree-$(k{-}1)$ polynomial, the
+$(k{+}1)$-th is determined by interpolation.  Full independence would
+require degree $u{-}1$.
+:::
+
+### The mod-reduction issue {#sec-mod-reduction}
+
+In practice $m \ne p$.  You take $h(x) \bmod p \bmod m$.  The first
+reduction $\bmod p$ is perfectly uniform; the second $\bmod m$
+introduces a slight bias.
+
+<!-- TikZ: Number line from 0 to p-1 divided into blocks of size m, with a partial block at the end showing the wraparound bias. -->
+
+If $p = qm + r$ with $0 < r < m$, the first $r$ residues each have
+probability $(q+1)/p$ instead of $q/p$.  The worst case is $p = m+1$:
+one residue gets twice the expected mass.  In general,
+
+$$
+\Pr[h(x_1)=y_1, \dots, h(x_k)=y_k] \;\le\; (2/m)^k
+$$ {#eq-mod-bias}
+
+for any $x_1, \dots, x_k$ and $y_1, \dots, y_k$.  This factor-of-2
+slack is harmless: plugging $(2/n)^k$ into the balls-and-bins analysis
+changes only the leading constant, not the $\Theta(\log n/\log\log n)$
+max-load guarantee.
+
+
+## The dictionary problem {#sec-dictionary}
+
+With the tools of hash families and $k$-wise independence in hand, you
+can tackle one of the most fundamental data structure problems.
+
+A *dictionary* supports two operations on key–value pairs from $U$:
+
+- **Update($k, v$):** associate key $k$ with value $v$.
+- **Query($k$):** return the value associated with $k$, or report
+  that $k$ is absent.
+
+The dictionary problem comes in two flavours: *static* (all keys known
+in advance) and *dynamic* (keys inserted and deleted over time).
+Hashing gives excellent solutions to both.
+
+### Hashing with chaining {#sec-chaining}
+
+Maintain an array $A[0..m{-}1]$ of linked lists.  Draw $h$ from a
+2-wise independent family.
+
+- **Update:** compute $h(k)$; scan the list at $A[h(k)]$.  If $k$ is
+  present, update its value; otherwise append $(k, v)$.
+- **Query:** compute $h(k)$; scan the list at $A[h(k)]$ for $k$.
+
+<!-- TikZ: An array of m cells, three of which have short linked lists hanging from them.  One cell's list is highlighted to show a query path. -->
+
+The running time of either operation equals the length of the list at
+$A[h(k)]$.  With $m \ge n$, the expected list length is $O(1)$ under
+2-wise independence—only pairwise collision probabilities matter.
+
+To see why: the expected list length at cell $h(k)$ is
+$\sum_{j \ne k} \Pr[h(j) = h(k)] \le n/m \le 1$.  This sum involves
+only pairwise collision probabilities, so 2-wise independence suffices.
+
+::: {.callout-note title="Static alternative: perfect hashing"}
+If the key set is known in advance, *perfect hashing* (Fredman,
+Komlós, Szemerédi 1984) guarantees worst-case $O(1)$ query time with
+$O(n)$ space.  The construction uses a two-level scheme: first hash
+into $n$ buckets, then build a small collision-free table inside each
+bucket.
+:::
+
+
+## Linear probing {#sec-linear-probing}
+
+Hashing with chaining scatters linked-list nodes across memory.  Each
+pointer dereference in a linked list is potentially a cache miss—the
+next node could be anywhere in the heap.  *Linear probing* stores
+everything in one contiguous array, exploiting CPU cache prefetching
+for dramatically better real-world performance.
+
+**Prefetching.**  Modern CPUs predict that if you access memory address
+$a$, you will soon access $a+1, a+2, \dots$ (common in array loops).
+The hardware speculatively loads these adjacent cache lines before you
+request them.  This means sequential memory accesses are far cheaper
+than random pointer chasing.
+
+**Scheme.**  To insert $x$: compute $h(x)$; if $A[h(x)]$ is occupied,
+walk forward through $A[h(x)+1], A[h(x)+2], \dots$ (wrapping around)
+until you find an empty cell, and store $(x, v)$ there.  Queries walk
+the same path: start at $h(x)$ and scan forward until you find $x$ or
+an empty cell.  Deletion requires care (typically "tombstone" markers
+or backward shifting).
+
+<!-- TikZ: An array with a contiguous run of occupied cells.  Item x hashes into the run and walks forward to the first empty cell.  Arrows show the sequential scan. -->
+
+::: {.callout-note title="History"}
+Linear probing was proposed by Samuel, Amdahl, and Boehme (1954) and
+first analysed by Knuth (1963), who showed that with $m = (1+\varepsilon)n$
+and a fully random $h$, the expected time per operation is
+$O(1/\varepsilon^2)$.
+:::
+
+### How much independence does linear probing need? {#sec-lp-independence}
+
+| Result | Reference | Independence |
+|--------|-----------|:------------:|
+| $O(1)$ expected time | Pagh, Pagh, Ružić (2007/2009) | 5-wise |
+| $\Omega(\log n)$ expected time exists | Pǎtraşcu & Thorup (2010) | 4-wise |
+| $O(1)$ for a specific 3-wise family | Pǎtraşcu & Thorup (2010) | simple tabulation |
+
+: Independence thresholds for linear probing {#tbl-lp-independence}
+
+The sharp threshold at 5-wise is surprising.  The intuition: conditioning
+on where the query element $x$ lands consumes one "degree of freedom,"
+leaving four independent evaluations—exactly what the fourth-moment
+argument requires.
+
+### Full intervals and the analysis framework {#sec-full-intervals}
+
+The key insight for analysing linear probing is that long scan times
+correspond to dense clusters of occupied cells.  You formalise
+"cluster density" through *full intervals*.
+
+**Definition.**
+For an interval $I$ of array cells, let $L(I) = |\{i \in S : h(i) \in I\}|$
+be the number of items whose hash value falls in $I$.  (This counts
+items by where they *hash to*, not where they end up after probing.)
+Call $I$ *full* if $L(I) \ge |I|$.
+
+A full interval of length $k$ has at least $k$ items hashing into it—so
+by pigeonhole, every cell in that interval is occupied (and possibly
+items spill beyond it).
+
+**Lemma.**
+If querying $x$ requires $k$ probes, then $h(x)$ belongs to a full
+interval of length $\ge k$.
+
+*Proof sketch.*  The item at $A[h(x)]$ got there by hashing somewhere
+at or before $h(x)$ and walking forward.  Every cell from that origin
+through $x$'s final landing spot is occupied, and every occupant hashed
+into that window.  Any prefix of length $k$ starting from the earliest
+origin is full.
+
+This reduces the analysis to bounding the expected number of full
+intervals containing $h(x)$:
+
+$$
+\mathbb{E}[\text{probes for } x]
+\;\le\; \sum_{k=1}^{\infty}\;\sum_{\substack{I:\; |I|=k,\\ h(x)\in I}}
+  \Pr[I \text{ is full}].
+$$ {#eq-lp-sum}
+
+There are $k$ intervals of length $k$ that contain $h(x)$, so
+
+$$
+\mathbb{E}[\text{probes}]
+\;\le\; \sum_{k=1}^{\infty} k \cdot
+  \max_{\substack{I:\;|I|=k,\\ h(x)\in I}} \Pr[I \text{ is full}].
+$$ {#eq-lp-max}
+
+For this sum to converge, you need $\Pr[I \text{ full}] = O(1/k^3)$.
+
+### The moment method {#sec-moment-method}
+
+With $m = 2n$, an interval of length $k$ expects $k/2$ items.  Being
+full means deviating from the mean by $k/2$.
+
+Apply Markov's inequality to the *sixth power* of the centered
+variable:
+
+$$
+\Pr\!\bigl[L(I) - \mathbb{E}[L(I)] \ge k/2\bigr]
+\;\le\; \frac{\mathbb{E}\!\bigl[(L(I) - \mathbb{E}[L(I)])^6\bigr]}{(k/2)^6}.
+$$ {#eq-moment-method}
+
+If the sixth central moment is $O(k^3)$ (which it is under 6-wise
+independence), the probability is $O(k^3/k^6) = O(1/k^3)$, making the
+sum in @eq-lp-max converge.
+
+::: {.callout-tip title="Why raise to a high power?"}
+Markov with $|X|$ gives a weak bound.  Raising to the $p$-th power
+amplifies the tail: a concentrated random variable has a small $p$-th
+moment, so the bound tightens dramatically.  This is the *moment
+method*, a workhorse throughout probability and algorithm analysis.
+:::
+
+Including the hash evaluation of $x$ itself, you need 7-wise
+independence in total (one for $x$, six for the moment).
+
+::: {.callout-note title="Chernoff vs. moments"}
+The Chernoff bound uses the *moment-generating function*
+$\mathbb{E}[e^{tX}]$, which implicitly captures all moments
+simultaneously.  The moment method uses a single finite moment
+$\mathbb{E}[X^p]$.  Chernoff gives sharper tails but demands full
+independence; the moment method works under $p$-wise independence.
+This trade-off—precision vs. independence requirements—recurs
+throughout the hashing literature.
+:::
+
+A more refined argument—covered in the next lecture—reduces the
+requirement from 7-wise to 5-wise by eliminating the factor-of-$k$
+union bound over intervals.  The trick is to union-bound over $O(1)$
+nodes in a binary tree rather than $k$ overlapping intervals.
+
+
+## Cheat sheet
+
+::: {.callout-important title="Lecture 3 — key results"}
+**Balls and bins ($m = n$).**
+Max load $= \Theta(\log n / \log\log n)$ w.h.p.  Proof: Chernoff or
+direct counting with union bound.
+
+**$k$-wise independent hash families.**
+Degree-$(k{-}1)$ polynomials over $\mathbb{F}_p$; storage $k \log p$
+bits.  $k$-wise $\Rightarrow$ any $k$ evaluations are mutually
+independent; $(k{+}1)$-th is determined.
+
+**Mod-reduction bias.**
+$h(x) \bmod p \bmod m$ is $k$-wise independent but not perfectly
+uniform; collision probability $\le (2/m)^k$.
+
+**Dictionary (chaining).**
+Array of linked lists, 2-wise hash.  Expected $O(1)$ per operation
+when $m \ge n$.
+
+**Linear probing.**
+Cache-friendly, $O(1)$ expected time with 5-wise independence.
+4-wise is insufficient (counterexample exists).
+
+**Moment method.**
+$\Pr[|X - \mu| \ge t] \le \mathbb{E}[(X-\mu)^p] / t^p$.
+Use even $p$; higher $p$ gives tighter tails for concentrated $X$.
+:::
+
+
+## FAQ — questions students actually asked
+
+**Q: Where does the factor of $2/m$ come from in the collision bound?**
+When you reduce $\bmod p \bmod m$, the residues $0, \dots, r{-}1$ (where
+$p = qm + r$) each absorb one extra pre-image compared to residues
+$r, \dots, m{-}1$.  The worst case is $p = m+1$: residue $0$ gets
+probability $2/p \approx 2/m$.  This factor propagates to $(2/m)^k$
+for $k$ collisions.
+
+**Q: Could you use rejection sampling—repeatedly applying $h$ until
+the output is less than $m$—instead of taking $\bmod m$?**
+In principle, yes: if $h(x) \ge m$, feed the result back into $h$.  But
+all $n$ items share the *same* hash function (same coefficients $a_i$),
+so rejecting for one item doesn't help others.  Worse, iterating $h$
+could create fixed points or short cycles.  The $\bmod m$ approach is
+simpler and the factor-of-2 bias is benign.
+
+**Q: Why is the polynomial family only $k$-wise independent and not
+fully independent?**
+A degree-$(k{-}1)$ polynomial over $\mathbb{F}_p$ is determined by $k$
+points (polynomial interpolation).  Given any $k$ evaluations, the
+$(k{+}1)$-th is fixed.  Full independence would require a polynomial of
+degree $u{-}1$—equivalent to storing all $u$ values explicitly.
+
+**Q: In the counting proof, you don't seem to use independence at all.
+What independence do you actually need?**
+Look carefully at @eq-counting-proof.  The step
+$\Pr[\text{all } k \text{ items hit bin 1}] = (1/n)^k$ factors the
+probability as a product—this requires exactly $k$-wise independence.
+The Chernoff-based proof needs full independence; the counting proof
+does not.
+
+**Q: For the load-balancing application, we need
+$\log n / \log\log n$-wise independence.  Is that cheap enough?**
+With the polynomial family, storing $h$ takes
+$k \log u = O((\log n / \log\log n) \log u)$ bits.  For typical
+universe sizes ($u = \operatorname{poly}(n)$), this is
+$O(\log^2 n / \log\log n)$ bits—far smaller than the $u \log m$ bits
+needed for a fully random function, but larger than the $O(\log u)$
+bits for a 2-wise family.  Whether this cost matters depends on the
+application.  For linear probing, you only need 5-wise independence,
+which takes $5 \log u$ bits—essentially free.
+
+**Q: Why does linear probing need more independence than chaining?**
+With chaining, the running time equals one linked-list length.
+Bounding the expected length uses only pairwise collision
+probabilities, so 2-wise independence suffices.  With linear probing,
+the running time depends on *runs of contiguous occupied cells*—a
+global property that couples many hash values together.  Proving that
+runs are short requires higher moments, which in turn need more
+independent hash evaluations.
+
+
+## Further reading
+
+1. **Fredman, Komlós, Szemerédi (1984).**  "Storing a sparse table with
+   $O(1)$ worst-case access time."  *JACM* 31(3).  The original perfect
+   hashing scheme.
+2. **Knuth (1963/1998).**  *The Art of Computer Programming*, Vol. 3,
+   §6.4.  The first analysis of linear probing.
+3. **Pagh, Pagh, Ružić (2009).**  "Linear probing with constant
+   independence."  *SIAM J. Comput.* 39(3).  5-wise independence suffices.
+4. **Pǎtraşcu & Thorup (2010).**  "On the $k$-independence required by
+   linear probing and minwise independence."  *ICALP 2010*.  4-wise
+   counterexample + simple tabulation analysis.
+5. **Mitzenmacher & Upfal (2017).**  *Probability and Computing*, Ch. 5.
+   Textbook treatment of balls-and-bins and Chernoff bounds.
+
+
+## Try it yourself
+
+1. **Warm-up.**
+   Prove that $k! \ge (k/e)^k$ (Stirling's lower bound) and use it to
+   tighten the constant in @eq-counting-proof.
+
+2. **Mod-reduction.**
+   Let $p = 2m - 1$.  Compute the exact collision probability
+   $\Pr[h(x) \bmod p \bmod m = 0]$ for a uniformly random
+   $h(x) \in \{0,\dots,p{-}1\}$.  How does it compare to $1/m$?
+
+3. **Moment method practice.**
+   Let $X_1, \dots, X_n$ be 4-wise independent $\{0,1\}$ random variables
+   with $\mathbb{E}[X_i] = 1/2$.  Show that
+   $\Pr[|\sum X_i - n/2| \ge t] \le O(n^2/t^4)$.
+
+4. **Implementation.**
+   Implement a hash table with chaining using the polynomial family
+   @eq-poly-family with $k=2$.  Insert $10^5$ random keys into a table
+   of size $m = 2 \times 10^5$.  Plot the distribution of chain lengths
+   and compare with the Poisson distribution $\text{Poi}(1/2)$.
+
+```python
+import numpy as np
+from collections import Counter
+
+def poly_hash(x, a0, a1, p, m):
+    """2-wise independent hash: h(x) = (a0 + a1*x) mod p mod m."""
+    return ((a0 + a1 * x) % p) % m
+
+# Parameters
+n = 100_000
+m = 200_000
+p = 200_003  # a prime >= m
+
+rng = np.random.default_rng(42)
+a0, a1 = rng.integers(0, p, size=2)
+keys = rng.integers(0, 10**9, size=n)
+
+bins = Counter(poly_hash(int(k), int(a0), int(a1), p, m) for k in keys)
+chain_lengths = list(bins.values())
+
+print(f"Max chain length: {max(chain_lengths)}")
+print(f"Mean chain length: {np.mean(chain_lengths):.3f}")
+print(f"Fraction of empty cells: {1 - len(bins)/m:.3f}")
+```
+
+5. **Open-ended.**
+   The counting proof shows that $\log n / \log\log n$-wise independence
+   suffices for the balls-and-bins max-load guarantee.  Construct
+   (or look up) an explicit 2-wise independent family for which the max
+   load is $\Omega(\sqrt{n})$, demonstrating that 2-wise is not enough.

@@ -1,0 +1,373 @@
+---
+title: "Learning Topic Models"
+subtitle: "COMPSCI 224 Lecture 13 — Fall 2014"
+author: "Companion notes by Kun Deng"
+date: today
+abstract: |
+  Topic models discover latent semantic structure in text corpora by
+  treating documents as mixtures of probability distributions over words.
+  Learning such models is equivalent to non-negative matrix factorization,
+  which is NP-hard in general. Under a natural *separability* assumption —
+  every topic has at least one "anchor word" unique to it — the problem
+  reduces to finding vertices of a convex hull, solvable in polynomial
+  time via linear programming. This lecture, a guest talk by Rong Ge,
+  traces that path from unsupervised learning to geometry.
+---
+
+## Why this lecture matters {#sec-why}
+
+Every time you use a recommendation engine, a document tagger, or a search filter that groups articles by theme, a topic model (or its descendant) is doing the work underneath. The conceptual arc here — probabilistic model $\to$ NMF $\to$ geometry — is a template you will see again whenever an NP-hard learning problem is tamed by a structural assumption. The algorithm itself is clean enough to implement and fast enough to run on real corpora.
+
+::: {.callout-tip title="The 30-second story"}
+1. Unsupervised learning seeks latent structure (clusters, topics) without labels; the structure is specified by a **probabilistic model** with unknown parameters.
+2. A **topic model** represents each topic as a distribution over words, and each document as a distribution over topics; the key parameter is the $n \times k$ **topic matrix** $A$.
+3. Learning the model from observed documents reduces to **non-negative matrix factorization** (NMF): $M = AW$ with $A, W \ge 0$.
+4. NMF is NP-hard in general, but under the **separability** assumption — each topic has an anchor word — the problem becomes geometric: find the vertices of a convex hull.
+5. Vertex-finding is solvable in polynomial time by checking convex hull membership with a linear program.
+:::
+
+
+## Supervised vs. unsupervised learning {#sec-supervised-unsupervised}
+
+In **supervised learning**, you receive data points *and* labels (e.g., emails marked spam / not-spam) and train a function to predict labels on new data. A spam filter is the canonical example: you are given thousands of emails, each tagged spam or not-spam, and the goal is to learn a classifier that generalises to unseen emails. That setting has decades of beautiful theory — computational learning theory, VC dimension, PAC learning — but it is not today's topic.
+
+In **unsupervised learning**, you receive data points $x$ alone — no labels, no teacher, no ground truth. The goal is to discover *structure* hiding in the data: clusters, low-rank representations, latent factors. Think of a pile of unlabelled documents: you cannot ask a human to tag each one, but you hope the data itself reveals patterns — groups of related articles, recurring themes, shared vocabulary.
+
+<!-- TikZ: Two-panel figure. Left panel: supervised — points in R^2 colored by label, with a separating boundary. Right panel: unsupervised — same points without colors, with three dotted ellipses indicating clusters. -->
+
+The simplest unsupervised task is **clustering**: given a cloud of points, partition them into groups so that points within a group are similar and points across groups are different. But clustering is just one kind of structure. The broader question is: given data without labels, what can you learn at all?
+
+::: {.callout-tip}
+The core question of unsupervised learning: "I see data with no labels — what structure is there?" The answer depends on the *model* you assume generated the data.
+:::
+
+
+## Probabilistic models and learning {#sec-prob-models}
+
+A **probabilistic model** is a function that maps a parameter $\theta$ to a data distribution $\mathcal{D}(\theta)$. Given $\theta$, you can *generate* data by sampling from $\mathcal{D}(\theta)$. The *learning* problem is the inverse: given samples from $\mathcal{D}(\theta)$, recover (an approximation to) $\theta$.
+
+### Warm-up: single Gaussian {#sec-single-gaussian}
+
+The simplest example: $\theta = (\mu, \sigma^2)$ specifies a one-dimensional Gaussian. Given the parameters, generating data is trivial — sample from $\mathcal{N}(\mu, \sigma^2)$. The learning problem is the inverse: given $n$ samples, estimate $\mu$ by the sample mean and $\sigma^2$ by the sample variance. The estimates converge to the true parameters as $n \to \infty$, and the rate of convergence is well understood.
+
+This is straightforward — which is exactly why it motivates asking: what happens with a harder model?
+
+### Mixture of Gaussians {#sec-mixture-gaussians}
+
+A **mixture of Gaussians** assumes each data point is drawn from one of $k$ component Gaussians. The parameters are:
+
+- **Means** $\mu_1, \mu_2, \ldots, \mu_k \in \mathbb{R}^d$ (the cluster centres).
+- **Weights** $w_1, w_2, \ldots, w_k \ge 0$ with $\sum_i w_i = 1$ (the mixing proportions).
+- For simplicity, assume all components share a known, spherical covariance matrix.
+
+To generate a point: pick component $i$ with probability $w_i$, then sample from $\mathcal{N}(\mu_i, \sigma^2 I)$. The learner sees only the samples — not which component each came from.
+
+<!-- TikZ: Three 2D Gaussians with different centres. Labeled μ_1, μ_2, μ_3. Points scattered around each, all in same colour to emphasise the learner doesn't see cluster assignments. Mixing weights w_1 = 0.4, w_2 = 0.3, w_3 = 0.3 annotated. -->
+
+::: {.callout-note}
+The learner has oracle access to the distribution: each query returns a fresh sample from $\mathcal{D}(\theta)$. The complexity question is how many samples (and how much time) are needed to approximate $\theta$. Even $d^k$ time is non-trivial; $\text{poly}(d, k)$ time is the gold standard.
+:::
+
+
+## Maximum likelihood and NP-hardness {#sec-max-likelihood}
+
+The standard approach: find the parameter $\theta$ that maximises the probability of the observed data.
+
+$$
+\hat{\theta} = \arg\max_{\theta} \sum_{i=1}^{n} \log p_\theta(v_i)
+$$ {#eq-mle}
+
+where $p_\theta$ is the density of $\mathcal{D}(\theta)$.
+
+For a single Gaussian, @eq-mle yields the sample mean and variance — easy. For a mixture of Gaussians, the problem is **NP-hard** (it is at least as hard as $k$-means, which is itself NP-hard). The intuition for why: the log-likelihood for a mixture involves a $\log \sum$ (log of a sum of Gaussian densities), which does not decompose cleanly. Optimising it requires simultaneously figuring out which component generated each point *and* estimating the component parameters — a chicken-and-egg problem.
+
+::: {.callout-warning}
+NP-hardness here refers to the worst case — the input data points can be adversarially chosen. When the data genuinely come from the model ($v_i \sim \mathcal{D}(\theta)$), the problem may be easier. This distinction between worst-case and average-case is central to the rest of the lecture.
+:::
+
+### Ways around NP-hardness {#sec-around-np-hard}
+
+| Strategy | Idea |
+|----------|------|
+| **Approximation** | Accept a constant-factor approximation. But a constant factor in log-probability space does not correspond to a constant factor in probability space — so the recovered $\theta$ can be wildly wrong. |
+| **Average-case analysis** | The data really do come from $\mathcal{D}(\theta)$, so worst-case hardness may not apply. |
+| **Natural assumptions** | Exploit structural properties of the domain (e.g., topic-word relationships) to sidestep hardness. |
+| **Heuristics** | Use EM or gradient methods and hope they work. Even better: analyse the heuristic under natural assumptions. |
+
+::: {.callout-important}
+These strategies are not mutually exclusive. The ideal outcome: a practical algorithm that also has provable guarantees under realistic assumptions. Today's lecture gives exactly that for topic models.
+:::
+
+
+## Topic models: what and why {#sec-topic-models}
+
+**Goal.** Learn semantic structure from a large text corpus automatically — which topics exist, what words characterise each topic, and how each document mixes topics.
+
+A **topic model** is a probabilistic model for document generation. Two foundational simplifying assumptions make the problem tractable.
+
+### Assumption 1: bag of words {#sec-bag-of-words}
+
+The *order* of words in a document does not matter — only the word frequencies. Permute the words of a headline and you can still guess the topic:
+
+> *preparations, DU, hotels, rise, Ebola* → clearly a health/travel article.
+
+This is unrealistic for syntax but reasonable for semantics, and it removes the need to model grammar.
+
+### Assumption 2: a topic is a distribution over words {#sec-topic-def}
+
+A **topic** is a probability distribution over the vocabulary of $n$ words. If a word comes from the "food" topic, it is "banana" with probability 0.01, "recipe" with probability 0.008, etc. Conditioned on the topic, words are drawn independently.
+
+### Assumption 3: a document is a distribution over topics {#sec-doc-def}
+
+Each document has a **topic proportion vector** $\mathbf{w} = (w_1, \ldots, w_k)$ with $w_i \ge 0$ and $\sum w_i = 1$. A document about 80% politics and 20% finance will draw words from the politics distribution 80% of the time.
+
+::: {.callout-note}
+Early models like pLSI (Hofmann, 1999) assigned each document a *single* topic. Latent Dirichlet Allocation (Blei, Ng, Jordan, 2003) introduced a Dirichlet prior over topic proportions, allowing documents to mix multiple topics. The Dirichlet prior encourages *sparse* mixtures — most documents discuss only a few topics — which agrees with intuition.
+:::
+
+
+## The topic matrix and document generation {#sec-topic-matrix}
+
+All topic-word distributions are collected into a single **topic matrix** $A \in \mathbb{R}^{n \times k}$:
+
+- Rows index words ($n$ = vocabulary size, often tens of thousands).
+- Columns index topics ($k$ = number of topics, often 100–200).
+- Entry $A_{v,j}$ = probability that word $v$ appears, given topic $j$.
+- Each column is a probability distribution: $A_{v,j} \ge 0$ and $\sum_v A_{v,j} = 1$.
+
+<!-- TikZ: A matrix A with rows labeled "banana", "vote", "snow", ... and columns labeled "food", "politics", "weather". A few entries highlighted: A[banana, food] = 0.01, A[snow, weather] = 0.02. -->
+
+### The generative recipe {#sec-generative}
+
+To generate a document:
+
+1. **Pick a length** $\ell$ (treat as fixed and known).
+2. **Pick a topic proportion vector** $\mathbf{w} \in \mathbb{R}^k$ (this step differs across models — pLSI, LDA, etc.).
+3. **For each word position** $i = 1, \ldots, \ell$:
+   a. Draw a topic $t_i \in \{1, \ldots, k\}$ according to $\mathbf{w}$.
+   b. Draw a word $z_i \in \{1, \ldots, n\}$ according to column $A_{\cdot, t_i}$.
+
+::: {.callout-warning}
+This lecture treats the topic proportion vectors $\mathbf{w}$ as arbitrary parameters (not drawn from a Dirichlet). The algorithm works regardless of how $\mathbf{w}$ is chosen, as long as a separability condition holds on $A$.
+:::
+
+
+## From topic models to matrix factorisation {#sec-nmf}
+
+Assume documents are long enough that word frequencies converge to their true probabilities. For document $d$ with topic proportions $\mathbf{w}^{(d)}$:
+
+$$
+\Pr[\text{word } v \mid \text{document } d] = \sum_{j=1}^{k} \Pr[\text{topic } j \mid d] \cdot \Pr[\text{word } v \mid \text{topic } j] = \sum_{j=1}^{k} w_j^{(d)} \cdot A_{v,j}
+$$ {#eq-doc-word}
+
+Stack these probabilities into an $n \times m$ **document-word matrix** $M$ (columns = documents, rows = words). Then @eq-doc-word in matrix form is:
+
+$$
+M = A \, W
+$$ {#eq-nmf}
+
+where $A \in \mathbb{R}_{\ge 0}^{n \times k}$ and $W \in \mathbb{R}_{\ge 0}^{k \times m}$. This is precisely the **non-negative matrix factorisation** (NMF) problem: given $M$, find $A$ and $W$ with non-negative entries such that $M = AW$.
+
+<!-- TikZ: Block diagram showing M (n × m) = A (n × k) × W (k × m). Label M "document-word matrix (known)", A "topic matrix (unknown)", W "topic proportions (unknown)". Use colour coding: M in blue, A in red, W in green. -->
+
+::: {.callout-important title="Why non-negativity matters"}
+Without the non-negativity constraint, factoring $M$ into two smaller matrices is just rank decomposition — solvable via SVD in polynomial time. But SVD factors can have negative entries, which cannot be interpreted as probabilities. Non-negativity is the constraint that makes NMF NP-hard (Vavasis, 2009) — and the one we must keep.
+:::
+
+
+## The separability assumption {#sec-separability}
+
+To sidestep NP-hardness, impose a structural assumption on the topic matrix $A$.
+
+::: {.callout-important title="Definition: separability (Donoho & Stodden, 2003)"}
+An $n \times k$ non-negative matrix $A$ is **separable** if, for every column $i \in \{1, \ldots, k\}$, there exists a row $a_i$ such that:
+
+1. $A_{a_i, i} > 0$ (positive entry in column $i$), and
+2. $A_{a_i, j} = 0$ for all $j \ne i$ (zero in every other column).
+
+Equivalently, after permuting rows, $A$ has a $k \times k$ diagonal submatrix on top (with positive diagonal), followed by an arbitrary non-negative block below.
+:::
+
+### Translation to topic modelling {#sec-anchor-words}
+
+- A **column** = a topic.
+- A **row** = a word.
+- Separability means: for each topic, there exists at least one **anchor word** that appears *only* in that topic.
+
+For example, "polar vortex" might be an anchor for the weather topic — it has near-zero probability under politics, food, or sports. The word "snow" is less ideal: it appears in weather articles but also in sports coverage (snow games in football) and lifestyle pieces. The assumption asks for at least one word per topic that is truly exclusive.
+
+<!-- TikZ: Matrix A with k=3 columns. Three highlighted rows (anchor words) form a diagonal block: row "blizzard" has nonzero only in "weather", row "touchdown" only in "sports", row "soufflé" only in "food". Other rows have entries in multiple columns. -->
+
+::: {.callout-tip}
+Separability does not require most words to be anchors. It requires exactly *one* anchor per topic. The vast majority of the vocabulary can — and does — appear in multiple topics.
+:::
+
+Why is this assumption helpful? If you see an anchor word in a document, you know with certainty that the document has non-zero weight on the corresponding topic. Anchor words act as signatures: they reveal which topics are present. The algorithm exploits this by first finding the anchor words (the vertices), then using them to decompose every other word's distribution.
+
+
+## Geometric reduction: convex hull vertex-finding {#sec-geometry}
+
+Separability transforms the algebraic NMF problem into a geometric one.
+
+### Rescaling to convex combinations {#sec-rescaling}
+
+Rescale each row of $M$ so that it sums to 1. Apply the corresponding normalisation to $A$ and $W$. Now the rows of $W$ also sum to 1, and for each anchor row $a_i$:
+
+$$
+M_{a_i} = W_i
+$$ {#eq-anchor-row}
+
+(the scaling constant becomes 1). For any *non-anchor* row $j$:
+
+$$
+M_j = \sum_{i=1}^{k} A_{j,i} \, W_i
+$$ {#eq-convex-combination}
+
+Since $A_{j,i} \ge 0$ and $\sum_i A_{j,i} = 1$ after normalisation, every row of $M$ is a **convex combination** of the rows of $W$. But the anchor rows *are* the rows of $W$. So:
+
+::: {.callout-important}
+The rows of $M$ are points in $\mathbb{R}^m$. The anchor-word rows are the **vertices** of their convex hull. Learning the topic model reduces to **finding the vertices** of a set of points.
+:::
+
+<!-- TikZ: A triangle in 2D (the convex hull) with three vertices labeled W_1, W_2, W_3. Interior points scattered and labeled as rows of M. An arrow from one interior point to the triangle edges illustrating the convex combination. -->
+
+
+## The vertex-finding algorithm {#sec-algorithm}
+
+**Problem.** Given $n$ points $v_1, \ldots, v_n$ in $\mathbb{R}^m$ that lie in the convex hull of $k$ unknown vertices $v_{a_1}, \ldots, v_{a_k}$ (which are among the $n$ points), find the vertices.
+
+**Assumption.** No vertex lies *inside* the convex hull of the others. (If it did, we could remove it and get a factorisation with smaller $k$ — a degenerate case analogous to using rank $k+1$ for a rank-$k$ matrix.)
+
+### The algorithm {#sec-vertex-lp}
+
+For each point $v_i$, test whether $v_i$ is in the convex hull of the remaining points $\{v_j : j \ne i\}$.
+
+**Test:** solve the linear program
+
+$$
+\text{find } \alpha_j \ge 0 \quad \text{s.t.} \quad v_i = \sum_{j \ne i} \alpha_j v_j, \quad \sum_{j \ne i} \alpha_j = 1
+$$ {#eq-lp-hull}
+
+- If @eq-lp-hull is **feasible**: $v_i$ is *not* a vertex (it is an interior point).
+- If @eq-lp-hull is **infeasible**: $v_i$ *is* a vertex.
+
+After removing duplicate points, this correctly identifies all $k$ vertices.
+
+```python
+import numpy as np
+from scipy.optimize import linprog
+
+def find_vertices(V):
+    """
+    V: (n, m) array — rows are points.
+    Returns indices of vertices of the convex hull.
+    """
+    n, m = V.shape
+    vertices = []
+    for i in range(n):
+        # Build LP: find alpha >= 0, sum(alpha) = 1, V_others^T @ alpha = V[i]
+        others = np.delete(V, i, axis=0)       # (n-1, m)
+        n_others = others.shape[0]
+
+        # Equality constraint: others^T @ alpha = V[i]  and  sum(alpha) = 1
+        A_eq = np.vstack([others.T, np.ones((1, n_others))])
+        b_eq = np.append(V[i], 1.0)
+
+        c = np.zeros(n_others)                  # feasibility only
+        bounds = [(0, None)] * n_others
+
+        res = linprog(c, A_eq=A_eq, b_eq=b_eq, bounds=bounds, method='highs')
+        if not res.success:                     # infeasible → vertex
+            vertices.append(i)
+    return vertices
+```
+
+::: {.callout-warning}
+This presentation assumes exact arithmetic. Real data introduces noise: word frequencies are estimated from finite documents, so points may not lie exactly in a lower-dimensional subspace. The practical algorithm checks whether $v_i$ is *close to* the convex hull (within a tolerance), which is still a linear program but requires a slightly different formulation.
+:::
+
+
+## Practical considerations {#sec-practical}
+
+### Finite documents {#sec-finite}
+
+The reduction to NMF assumes documents are long enough that word frequencies approximate their true probabilities. For short documents, the probability estimates are noisy. The improved version of this algorithm does not estimate the full document-word matrix $M$ directly. Instead, it estimates **word co-occurrence probabilities** — the probability that two words both appear in the same document — which can be estimated accurately with enough documents even when individual documents are short.
+
+### Computational cost {#sec-cost}
+
+The naive vertex-finding algorithm solves $n$ linear programs, each of size $O(n)$ variables and $O(m)$ constraints. For a vocabulary of $n = 50{,}000$ words, this is expensive but feasible. Improved algorithms (Arora, Ge, Moitra, 2012) reduce the cost significantly and scale to real corpora like the New York Times archive, producing results comparable to heuristic algorithms like variational inference for LDA — and running faster.
+
+::: {.callout-note title="Aside (mine, not the lecturer's)"}
+Since this 2014 lecture, neural topic models (e.g., using variational autoencoders) have become popular. They drop the bag-of-words assumption and use word embeddings. Nevertheless, the separability/anchor-word framework remains theoretically important: it is one of the few settings where provably correct topic recovery is possible in polynomial time.
+:::
+
+
+## Cheat sheet {#sec-cheat-sheet}
+
+::: {.callout-important title="Cheat sheet — Learning topic models"}
+
+**Setup.**
+A topic model defines topics as distributions over $n$ words, documents as distributions over $k$ topics. The topic matrix $A \in \mathbb{R}_{\ge 0}^{n \times k}$ has columns summing to 1.
+
+**Key equation.**
+The document-word matrix factors as $M = AW$, where $W \in \mathbb{R}_{\ge 0}^{k \times m}$ holds topic proportions for $m$ documents. This is non-negative matrix factorisation (NMF).
+
+**Hardness.** NMF is NP-hard in general (Vavasis, 2009). Maximum likelihood for mixtures of Gaussians is at least as hard as $k$-means (also NP-hard).
+
+**Separability.** $A$ is separable if every topic has an anchor word — a word appearing in that topic only. Under separability, after rescaling, the rows of $M$ lie in the convex hull of the rows of $W$, and anchor-word rows are the vertices.
+
+**Algorithm.** For each point, test convex hull membership via an LP. Infeasible $\Rightarrow$ vertex (anchor word). Feasible $\Rightarrow$ interior point. Recovers $W$, then $A$ from $M = AW$.
+
+**Practical.** Use word co-occurrence instead of direct frequency estimation. Improved algorithms (Arora, Ge, Moitra, 2012) run on large corpora, matching LDA quality with faster runtime.
+:::
+
+
+## FAQ — questions students actually asked {#sec-faq}
+
+**Q: When you say "polynomial number of samples," polynomial in what?**
+
+You have oracle access to the distribution: each query returns a sample. If your algorithm runs in polynomial time, it automatically takes at most polynomially many samples. The complexity can be polynomial in $d$ (dimension) and $k$ (number of components). Even $d^k$ time is non-trivial; the goal is $\text{poly}(d, k)$.
+
+**Q: Does the bag-of-words assumption mean each word is independently drawn?**
+
+Yes — conditioned on the topic assignment. Given a word's topic, its identity is drawn independently of all other words. Words within the same document are *not* marginally independent (they share the same topic proportion vector), but they are conditionally independent given their topic assignments.
+
+**Q: In the pLSI model, each document has only one topic?**
+
+Yes. The topic proportion vector $\mathbf{w}$ is a basis vector (one entry is 1, the rest 0), drawn with some prior probability $\pi_i$. Later models like LDA let $\mathbf{w}$ be a general distribution, allowing documents to mix topics. This better fits real data — most documents touch multiple themes.
+
+**Q: Can't we just use SVD instead of NMF?**
+
+SVD gives you a low-rank factorisation, but the factors can have negative entries. Negative entries cannot be interpreted as probabilities. Non-negativity is the essential constraint that makes the problem NP-hard — and meaningful.
+
+**Q: What if a topic doesn't have an anchor word?**
+
+Then the separability assumption fails for that topic, and this algorithm cannot identify it. In practice, most topics of reasonable granularity do have words that are highly specific to them. The assumption is empirically reasonable for corpora like news articles with 100–200 topics.
+
+
+## Further reading {#sec-further-reading}
+
+- **Arora, Ge, Halpern, Mimno, Moitra, Sontag, Wu, Zhu (2013).** "A Practical Algorithm for Topic Modeling with Provable Guarantees." *ICML 2013.* The fast, practical version of the anchor-word algorithm applied to real corpora. <!-- TODO: citation -->
+
+- **Arora, Ge, Moitra (2012).** "Learning Topic Models — Going Beyond SVD." *FOCS 2012.* The theoretical foundation: polynomial-time NMF under separability. <!-- TODO: citation -->
+
+- **Blei, Ng, Jordan (2003).** "Latent Dirichlet Allocation." *JMLR 3: 993–1022.* The foundational LDA paper that popularised mixed-membership topic models.
+
+- **Donoho, Stodden (2003).** "When Does Non-Negative Matrix Factorization Give a Correct Decomposition into Parts?" *NeurIPS 2003.* Introduced the separability condition.
+
+- **Vavasis (2009).** "On the Complexity of Nonnegative Matrix Factorization." *SIAM J. Optim. 20(3): 1364–1377.* NP-hardness proof for NMF.
+
+
+## Try it yourself {#sec-exercises}
+
+1. **Warm-up.** Suppose $k = 2$ and the topic matrix is
+   $$A = \begin{pmatrix} 0.5 & 0 \\ 0 & 0.3 \\ 0.5 & 0.7 \end{pmatrix}.$$
+   Verify that $A$ is separable. Identify the anchor words and the non-anchor word. If a document has topic proportions $\mathbf{w} = (0.6, 0.4)$, compute the word-frequency vector for that document.
+
+2. **Convex hull membership.** Write down the LP that tests whether the point $(0.3, 0.3)$ is in the convex hull of $\{(1, 0),\; (0, 1),\; (0, 0)\}$. Solve it by hand and verify the answer.
+
+3. **SVD vs. NMF.** Generate a $6 \times 4$ matrix $M = AW$ where $A$ is a $6 \times 2$ separable non-negative matrix and $W$ is $2 \times 4$ non-negative. Compute the rank-2 SVD of $M$. Verify that the SVD factors have negative entries. Then use the vertex-finding LP to recover the rows of $W$ from $M$.
+
+4. **Anchor words on real data (code).** Using scikit-learn's `fetch_20newsgroups`, build a term-document frequency matrix for two newsgroups (e.g., `rec.sport.baseball` and `sci.space`). Normalise rows to sum to 1. Apply the vertex-finding algorithm from @sec-vertex-lp to identify candidate anchor words. Do they make semantic sense?
+
+5. **Robustness (open-ended).** Add Gaussian noise with standard deviation $\sigma$ to each entry of a synthetic $M = AW$ (clip negatives to zero, renormalise). At what noise level does the vertex-finding algorithm start returning incorrect anchors? How would you modify the LP to tolerate noise?

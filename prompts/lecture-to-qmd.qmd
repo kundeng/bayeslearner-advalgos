@@ -1,0 +1,254 @@
+---
+title: "The lecture-to-QMD conversion prompt"
+subtitle: "Reusable template for turning a lecture transcript into a chapter"
+---
+
+# The conversion prompt {#sec-prompt}
+
+This is the prompt fed to an LLM along with a YouTube transcript to generate a draft chapter for a Quarto book. It is **course-agnostic** — fill in the placeholders to adapt it to any lecture series.
+
+The prompt is split into four sections: **role**, **inputs**, **output spec**, **style rules**. Each is load-bearing — dropping any one of them measurably degrades quality.
+
+---
+
+## The prompt {#sec-prompt-body}
+
+````markdown
+# Role
+
+You are an expert technical writer producing a chapter of a Quarto book that
+serves as companion notes to **{{COURSE_ID}} — {{COURSE_TITLE}}** ({{TERM}}).
+Your audience is:
+
+{{AUDIENCE_DESCRIPTION}}
+
+The book's voice is **precise, intuition-first, and sparing with prose**. Math
+is introduced *after* the intuition, not before. Every symbol is defined the
+first time it appears. The reader should be able to put the chapter down after
+each section and explain what they just learned to a peer.
+
+# Inputs you will receive
+
+1. The lecture's **YouTube auto-transcript** (verbatim, including filler words
+   and Q&A asides). It is your source of truth for *what* the lecturer covered.
+2. The lecture **number and title** (e.g. "Lecture 2 — {{EXAMPLE_TITLE}}").
+3. The lecture **table of contents** with timestamps when available.
+4. Optional: links to slides, papers, or supplementary material.
+
+You do **not** have access to the lecture slides as images. You must infer
+diagram content from the transcript.
+
+# Output spec
+
+Produce a single Quarto Markdown (`.qmd`) file. Use **exactly** this structure:
+
+1. **YAML front matter** with `title`, `subtitle: "{{COURSE_ID}} Lecture N — {{TERM}}"`,
+   `author: "Companion notes by {{AUTHOR}}"`, `date: today`, and a 2–4 sentence
+   `abstract` that captures the chapter's core argument (not its outline).
+2. `## Why this lecture matters` — one paragraph + a single boxed "30-second
+   story" callout summarising the chapter in 4–6 numbered sentences.
+3. **Body sections**, one per major topic in the lecture's TOC. Each body
+   section MUST have:
+     - a section anchor (`{#sec-...}`) for cross-referencing,
+     - **intuition before formalism** (a metaphor or worked example, then math),
+     - at least one diagram (TikZ or Mermaid) when a structure or flow is being
+       introduced,
+     - explicit naming of every symbol at first use, in prose,
+     - a callout (`note`, `tip`, `warning`, or `important`) at least every two
+       subsections.
+4. `## Cheat sheet` — a single `callout-important` block summarising the
+   chapter on one printable page, organised by topic.
+5. `## FAQ — questions students actually asked` — answer 4–8 of the genuine
+   Q&A exchanges that appear in the transcript. **Lift them from the transcript;
+   do not invent.** Phrase the question as the student asked it; phrase the
+   answer concisely and correctly even if the lecturer's live answer was
+   ambiguous.
+6. `## Further reading` — 3–6 primary sources (papers, not blog posts) that the
+   lecture references, with one-line annotations.
+7. `## Try it yourself` — 3–5 exercises that escalate in difficulty, ending
+   with at least one that requires writing code.
+
+# Style rules
+
+## Voice
+- Second person ("you") for direct instruction; never "we" except when narrating
+  what *the algorithm* is doing.
+- Active voice. Avoid hedges ("perhaps", "it might be argued"). State things
+  and let callouts handle nuance.
+- One idea per sentence. Break long sentences.
+- No filler ("As we've seen, …", "It is important to note that …"). Just say
+  the thing.
+
+## Math
+- Use display math (`$$ … $$`) for any equation referenced later or longer than
+  about 30 characters.
+- Tag referenceable equations with `{#eq-name}` and refer to them as `@eq-name`.
+- Define every symbol in prose at first use. Maintain consistent notation
+  across chapters (see the notation table in `index.qmd` if one exists).
+- When deriving, show every step. The reader should never have to reconstruct
+  algebra to follow.
+
+## Diagrams — more is better
+
+Algorithms are spatial and sequential; **diagrams are not decoration, they are
+the explanation.** Every major algorithm or data structure in the lecture should
+have at least one visual. Aim for **one diagram every 400–600 words of prose**.
+
+### TikZ (default for static diagrams)
+- Use for graphs, trees, geometric arguments, algorithm state snapshots,
+  data-structure layouts, and any diagram with math labels.
+- Embed in a fenced `tikz` block with knitr chunk header syntax:
+  ```
+  ```{tikz, label="fig-name", fig.cap="Caption", echo=FALSE, out.width="90%"}
+  \usetikzlibrary{arrows.meta, positioning}
+  \begin{tikzpicture}[...]
+  ...
+  \end{tikzpicture}
+  ```
+  ```
+  Rules for TikZ blocks:
+  - Do NOT put `\usepackage` inside — knitr handles the preamble.
+  - Only `\usetikzlibrary` is allowed inside the block.
+  - `\mathbb` does NOT work — use `\mathbf{R}` for real number sets.
+
+### Mermaid (for simple flowcharts without math)
+- Use for high-level algorithm flow or decision trees where no math symbols
+  are needed in node labels.
+
+### Manim (for the hardest 1–2 concepts per lecture)
+- Use **Manim** when motion genuinely clarifies: step-by-step algorithm
+  execution (e.g. a hash table filling up, a flow augmenting along a path,
+  a tree rotating during a splay), convergence of iterative methods, or
+  geometric intuition that benefits from animation.
+- Place the Manim Python script in `diagrams/manim/<topic>.py` and reference
+  the rendered video/GIF from the QMD.
+- Reserve Manim for concepts where a static diagram would require 4+ panels
+  to show what one animation shows in 10 seconds. Don't animate for the
+  sake of animating.
+
+### General rules
+- Every figure has a `fig-cap` and a `label` for cross-referencing.
+- Prefer **step-by-step state diagrams** (before/after snapshots of a data
+  structure) over abstract architecture boxes. The reader should be able to
+  trace the algorithm by hand using the diagram.
+- For graph algorithms: show the graph with edge weights, highlight the
+  current frontier / augmenting path / cut, annotate with intermediate
+  values ($d[v]$, $f[v]$, flow values).
+
+## Callouts (use these, not bare bold-text "Note:")
+- `callout-tip` → intuition, mental models, mnemonics
+- `callout-note` → asides, historical context, "the editor's view"
+- `callout-warning` → pitfalls, common mistakes, framework gotchas
+- `callout-important` → key results, takeaways, the cheat sheet
+- `callout-caution` → things that *look* right but aren't
+
+## Code
+- {{CODE_STACK_DESCRIPTION}}
+- Mark demos that hit the network or require special resources with
+  `#| eval: false` so the book builds without them.
+- Annotate non-obvious lines with end-of-line comments. Don't over-comment.
+
+## Length
+- Target: **3 500–5 500 words** of prose, plus code and diagrams. A 75-minute
+  lecture should compress, not expand.
+- If a topic in the transcript is filler (course logistics, demo banter,
+  asides about the lecturer's youth), drop it without comment. The book is not
+  a transcript.
+
+## Fidelity
+- The chapter follows the *concepts* of the lecture in roughly the *order* the
+  lecturer presents them, but **reorganises freely** for clarity. If the
+  lecture's order makes a topic harder to grasp, reorder.
+- Preserve the lecturer's worked examples — they are pedagogically load-bearing
+  and students associate them with the course.
+- Add modern context where the lecture is dated. Mark these additions with a
+  `callout-note` titled "Aside (mine, not the lecturer's)".
+
+## Honesty
+- If the transcript is unclear on a point, write what is unambiguously correct
+  and add a `callout-note` flagging the ambiguity rather than guessing.
+- Never invent a citation. If you don't know the paper, name the result and
+  leave a `<!-- TODO: citation -->` HTML comment.
+- Never include a quote attributed to the lecturer that you can't ground in
+  the transcript.
+
+# Quality bar — the chapter is done when
+
+- A reader who hasn't watched the lecture can read the chapter linearly and
+  reach the same understanding as one who has.
+- Every section ends in a state where the reader could correctly answer "what
+  was that section about?" in one sentence.
+- The cheat sheet, on its own, is a study aid for an exam.
+- The FAQ contains at least one question that genuinely got *me* the first
+  time I saw the material.
+- No section is more than ~800 words without an intervening figure, callout,
+  or table.
+
+# Anti-patterns to avoid
+
+- "We will now show that …" → just show it.
+- Restating the equation in prose immediately after presenting it (the
+  equation already says it).
+- Inventing tidiness the lecture didn't have. If a topic was confusingly
+  presented, fix the *exposition*, not the *content* — don't hide the
+  controversy or the open problem.
+- Padding the FAQ with questions no one asks.
+- Repeating the cheat sheet's content in the body. The cheat sheet is a
+  *summary*, not a duplication.
+
+# Now, the lecture
+
+Below is the transcript for **{{LECTURE_NUMBER}} — {{LECTURE_TITLE}}**. The
+lecturer's table of contents is:
+
+{{TOC_WITH_TIMESTAMPS}}
+
+Transcript:
+
+```
+{{TRANSCRIPT}}
+```
+
+Produce the QMD chapter. Begin output with the YAML front matter; do not
+preface with explanation.
+````
+
+---
+
+## Placeholders
+
+Fill these in for your course:
+
+| Placeholder | Example (CS224N) | Example (COMPSCI 224) |
+|-------------|-------------------|------------------------|
+| `{{COURSE_ID}}` | CS224N | COMPSCI 224 |
+| `{{COURSE_TITLE}}` | NLP with Deep Learning | Advanced Algorithms |
+| `{{TERM}}` | Spring 2024 | Fall 2023 |
+| `{{AUDIENCE_DESCRIPTION}}` | A grad student with linear algebra, probability, Python/PyTorch | A grad student with undergraduate algorithms (CLRS-level), probability, and mathematical maturity |
+| `{{EXAMPLE_TITLE}}` | Word Vectors and Language Models | Hashing and Sketching |
+| `{{AUTHOR}}` | Kun Deng | Kun Deng |
+| `{{CODE_STACK_DESCRIPTION}}` | Python with `gensim`, `numpy`, `torch` as the default stack | Python with `numpy` and pseudocode as the default; use actual implementations only when illuminating |
+| `{{LECTURE_NUMBER}}` | Lecture 2 | Lecture 5 |
+| `{{LECTURE_TITLE}}` | Word Vectors and Language Models | Hashing |
+| `{{TOC_WITH_TIMESTAMPS}}` | *(paste from video description)* | *(paste from video description)* |
+| `{{TRANSCRIPT}}` | *(paste full transcript)* | *(paste full transcript)* |
+
+---
+
+## How to use this prompt
+
+1. Fill in the placeholders above for your course.
+2. Paste the filled prompt plus the transcript into Claude (Opus with 1M context handles a full lecture easily).
+3. Save the response as `lectures/NN-<slug>.qmd`.
+4. Add the new chapter to `_quarto.yml`.
+5. **Read it through manually before publishing.** The model is good but not perfect — diagrams sometimes need tweaking, and citations need verifying.
+
+::: {.callout-tip}
+## Iterate, don't one-shot
+Generate a draft, render it (`quarto render`), open the rendered chapter, and feed back specific issues in follow-up turns. Targeted second passes produce a sharper chapter than re-running the full prompt.
+:::
+
+::: {.callout-warning}
+## Don't skip the transcript
+Tempted to feed the model just the lecture's bullet-point TOC? Don't. The transcript is what gives the chapter its examples, asides, and student questions — the things that make the chapter feel like the lecture and not a generic textbook entry.
+:::

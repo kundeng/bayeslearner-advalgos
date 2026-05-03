@@ -1,0 +1,412 @@
+---
+title: "Integrality Gaps and Approximation Schemes"
+subtitle: "COMPSCI 224 Lecture 11 — Fall 2014"
+author: "Companion notes by Kun Deng"
+date: today
+abstract: |
+  LP relaxations are powerful but not omnipotent: the integrality gap
+  puts a hard ceiling on what any LP-based analysis can achieve.
+  This lecture finishes the dual-fitting proof that greedy gives an
+  $H_n$ approximation for weighted set cover, proves a primal-dual
+  2-approximation for vertex cover, exhibits tight integrality gaps
+  for both problems (factor 2 for vertex cover, $\Theta(\log n)$ for
+  set cover via a linear-algebraic construction over $\mathbb{F}_2^q$),
+  then pivots to approximation schemes — PTAS, FPTAS, FPRAS — and
+  builds a PTAS for knapsack by enumerating high-value items and
+  feeding the rest to greedy.
+---
+
+## Why this lecture matters {#sec-why}
+
+Every time you round an LP relaxation into an integer solution, you pay for the gap between the fractional optimum and the true optimum. Understanding where that gap is tight tells you when to stop trying to improve an LP-based algorithm and when to reach for a different formulation. The second half of the lecture introduces approximation schemes — algorithms that get arbitrarily close to optimal — and shows exactly when they can and cannot exist.
+
+::: {.callout-tip title="The 30-second story"}
+1. **Dual fitting** shows greedy for weighted set cover achieves an $H_n \approx \ln n$ approximation by maintaining a dual solution whose cost equals the primal cost, then scaling down by $H_n$ to restore feasibility.
+2. **Vertex cover** admits a clean primal-dual 2-approximation: pick an uncovered edge, take both endpoints, set the dual variable to 1.
+3. The **integrality gap** of the standard LP for vertex cover is 2 (exhibited by $K_n$), and for set cover it is $\Theta(\log n)$ (exhibited by a construction over $\mathbb{F}_2^q$).
+4. A **PTAS** for knapsack enumerates the $O(1/\varepsilon)$ high-value items and runs greedy on the rest, yielding $(1-\varepsilon)$-OPT in $n^{O(1/\varepsilon)}$ time.
+5. **FPTAS** and **FPRAS** refine the idea: polynomial in both $n$ and $1/\varepsilon$, with randomized variants allowed a $1/3$ failure probability.
+:::
+
+
+## Dual fitting for weighted set cover {#sec-dual-fitting}
+
+Recall the setup. The universe is $\{1, \ldots, n\}$. There are $m$ sets, each set $S$ has cost $c_S$. The goal is to cover the universe at minimum total cost.
+
+### The LP relaxation and its dual {#sec-set-cover-lp}
+
+The LP relaxation assigns a fractional value $x_S \in [0,1]$ to each set:
+
+$$
+\min \sum_S c_S x_S \quad \text{s.t.} \quad \sum_{S \ni i} x_S \ge 1 \;\;\forall\, i, \quad x_S \ge 0 \;\;\forall\, S.
+$$ {#eq-set-cover-primal}
+
+The dual assigns a "price" $y_i$ to each element:
+
+$$
+\max \sum_{i=1}^n y_i \quad \text{s.t.} \quad \sum_{i \in S} y_i \le c_S \;\;\forall\, S, \quad y_i \ge 0 \;\;\forall\, i.
+$$ {#eq-set-cover-dual}
+
+::: {.callout-tip}
+Think of $y_i$ as how much element $i$ is willing to "pay" to be covered. The dual constraint says no set collects more in payments than it costs. Weak duality guarantees $\sum y_i \le \text{OPT}$.
+:::
+
+### The greedy algorithm and its dual interpretation {#sec-greedy-dual}
+
+The weighted greedy algorithm repeatedly picks the set minimizing $c_S / |\text{new elements covered by } S|$. Dual fitting maintains a dual solution alongside the primal:
+
+1. When greedy takes set $S$, set $x_S = 1$.
+2. For each newly covered element $e$, set $y_e = c_S / |\text{newly covered elements}|$.
+
+Two observations fall out immediately:
+
+- **Primal cost = Dual cost.** The cost charged to the primal equals the total price assigned in the dual, by construction.
+- **Primal is feasible.** Greedy runs until every element is covered, so every primal constraint is satisfied.
+
+The dual $y$ may *not* be feasible — some set $S$ might collect more in prices than $c_S$. The key claim is that scaling down by $H_n$ (the $n$-th harmonic number) fixes this.
+
+### Proving $y / H_n$ is dual-feasible {#sec-hn-proof}
+
+Fix a set $S$ with $|S| = k$. Order its elements $e_1, e_2, \ldots, e_k$ by the time they are first covered (by any set, not necessarily $S$).
+
+<!-- TikZ: Timeline showing elements e_1 through e_k being covered in order. At the moment e_i is about to be covered, show that S still has k-i+1 uncovered elements, so greedy could have chosen S at price c_S/(k-i+1). Arrow from each e_i to its assigned price y_{e_i}. -->
+
+Right before $e_i$ is covered, the set $S$ still contains at least $k - i + 1$ uncovered elements. Greedy chose the set with the lowest price-per-element, so:
+
+$$
+y_{e_i} \le \frac{c_S}{k - i + 1}.
+$$ {#eq-price-bound}
+
+Summing over all elements of $S$:
+
+$$
+\sum_{i=1}^k y_{e_i} \le c_S \sum_{i=1}^k \frac{1}{k - i + 1} = c_S \cdot H_k \le c_S \cdot H_n.
+$$ {#eq-harmonic-sum}
+
+Dividing by $H_n$ makes the dual constraint $\sum_{i \in S} y_i \le c_S$ hold for every set $S$. Since primal cost equals dual cost, and the scaled dual is feasible:
+
+$$
+\text{Greedy cost} = \sum y_i = H_n \cdot \sum \frac{y_i}{H_n} \le H_n \cdot \text{OPT}_{\text{LP}} \le H_n \cdot \text{OPT}.
+$$
+
+::: {.callout-important}
+If every set has size at most $k$, greedy gives an $H_k$ approximation — potentially much better than $H_n$ for sparse set systems.
+:::
+
+
+## Vertex cover via primal-dual {#sec-vertex-cover}
+
+### The problem and its LP {#sec-vc-lp}
+
+Given an undirected graph $G = (V, E)$ with $|V| = n$ and $|E| = m$, find the smallest set $S \subseteq V$ such that every edge has at least one endpoint in $S$.
+
+Vertex cover is a special case of set cover: each vertex is a "set" containing its incident edges, and the universe is the edge set.
+
+The LP relaxation and its dual:
+
+$$
+\min \sum_v x_v \quad \text{s.t.} \quad x_u + x_v \ge 1 \;\;\forall\, (u,v) \in E, \quad x_v \ge 0 \;\;\forall\, v.
+$$ {#eq-vc-primal}
+
+$$
+\max \sum_e y_e \quad \text{s.t.} \quad \sum_{e \ni v} y_e \le 1 \;\;\forall\, v, \quad y_e \ge 0 \;\;\forall\, e.
+$$ {#eq-vc-dual}
+
+### The greedy algorithm {#sec-vc-greedy}
+
+While there exists an uncovered edge $(u, v)$: add *both* $u$ and $v$ to the cover.
+
+The edges chosen in each iteration form a **matching** (no two share an endpoint). The cover has $2|\text{matching}|$ vertices, and any vertex cover must include at least one endpoint of each matching edge, so:
+
+$$
+|\text{cover}| = 2|\text{matching}| \le 2 \cdot \text{OPT}.
+$$
+
+### Primal-dual proof {#sec-vc-pd}
+
+This is not dual fitting — it is pure primal-dual, because both solutions are automatically feasible.
+
+When greedy covers edge $e = (u,v)$:
+
+- **Primal:** set $x_u = 1$ and $x_v = 1$.
+- **Dual:** set $y_e = 1$.
+
+<!-- TikZ: Small graph with 5-6 vertices and edges. Highlight an uncovered edge (u,v) in red. Show both u and v being added to the cover (shaded). Show y_e = 1 label on the edge. After a few iterations, show the matching edges and the resulting cover. -->
+
+**Feasibility.** The primal is feasible because every edge has at least one endpoint set to 1. The dual is feasible because each vertex is added to the cover at most once, so each vertex is incident to at most one edge with $y_e = 1$.
+
+**Approximation ratio.** Each dual increase of 1 causes a primal increase of at most 2 (both endpoints). So:
+
+$$
+\text{Primal cost} \le 2 \cdot \text{Dual cost} \le 2 \cdot \text{OPT}.
+$$
+
+::: {.callout-note}
+On the homework, the problem extends to *weighted* vertex cover. Taking both endpoints is wasteful when one is much cheaper. The primal-dual perspective guides you to a better algorithm: increase $y_e$ until some vertex's dual constraint goes tight, then add that vertex.
+:::
+
+
+## Integrality gaps {#sec-integrality-gaps}
+
+### What the gap measures {#sec-gap-def}
+
+An LP relaxation replaces integer constraints with linear ones. The **integrality gap** measures the worst-case ratio between the LP optimum and the true (integer) optimum over all instances:
+
+$$
+\text{Integrality gap} = \sup_{\text{instances}} \frac{\text{OPT}_{\text{IP}}}{\text{OPT}_{\text{LP}}}.
+$$ {#eq-ig-def}
+
+If the gap is $\beta$, then no analysis that compares against $\text{OPT}_{\text{LP}}$ can prove an approximation ratio better than $\beta$. This does *not* rule out better algorithms — only better *LP-based* analyses.
+
+::: {.callout-warning}
+The integrality gap is a property of the *LP relaxation*, not of the problem. A different formulation of the same problem may have a smaller gap. The Sherali–Adams hierarchy systematically tightens LP relaxations, eventually matching the integer program — but at exponential LP size.
+:::
+
+### Vertex cover: gap of 2 {#sec-ig-vc}
+
+Take the complete graph $K_n$. The LP optimum sets $x_v = 1/2$ for every vertex, achieving cost $n/2$. But any valid vertex cover must include at least $n-1$ vertices (leaving out one vertex leaves no uncovered edges, but leaving out two leaves their shared edge uncovered).
+
+<!-- TikZ: Complete graph K_5 with all edges drawn. Each vertex labeled x_v = 1/2. Below, show the integer solution: all vertices shaded except one. Label LP-OPT = n/2 and IP-OPT = n-1. -->
+
+$$
+\frac{\text{OPT}_{\text{IP}}}{\text{OPT}_{\text{LP}}} = \frac{n-1}{n/2} \to 2 \quad \text{as } n \to \infty.
+$$
+
+So the standard LP for vertex cover cannot prove anything better than a 2-approximation.
+
+### Set cover: gap of $\Theta(\log n)$ {#sec-ig-sc}
+
+This construction uses the vector space $\mathbb{F}_2^q$ (bit strings of length $q$ with XOR arithmetic). Set $n = 2^q - 1$.
+
+- **Elements** correspond to nonzero vectors in $\mathbb{F}_2^q$.
+- **Sets** also correspond to vectors: for each $\alpha \in \mathbb{F}_2^q$, define $S_\alpha = \{e : \alpha \cdot e = 1 \pmod{2}\}$.
+
+There are $2^q$ sets (including $S_0 = \emptyset$). Each nonzero element lies in exactly half the sets — if you pick $\alpha$ uniformly at random, $\Pr[\alpha \cdot e = 1] = 1/2$ for any fixed nonzero $e$.
+
+**Fractional solution.** Set $x_\alpha = 2/m$ for every $\alpha$ (where $m = 2^q$ is the number of sets). Each element is in $m/2$ sets, so $\sum_{S \ni e} x_\alpha = (m/2)(2/m) = 1$. The total LP cost is $\sum x_\alpha = 2$.
+
+**Integer lower bound.** Suppose $q - 1$ sets $S_{\alpha_1}, \ldots, S_{\alpha_{q-1}}$ cover the universe. The set of elements *not* covered by any $S_{\alpha_i}$ is:
+
+$$
+\{e : \alpha_i \cdot e = 0 \;\;\forall\, i = 1, \ldots, q-1\}.
+$$
+
+This is the null space of a $(q-1) \times q$ matrix over $\mathbb{F}_2$, which has dimension at least 1. So there exists a nonzero uncovered element — a contradiction. Any integer solution needs at least $q = \log_2(n+1)$ sets.
+
+$$
+\frac{\text{OPT}_{\text{IP}}}{\text{OPT}_{\text{LP}}} \ge \frac{q}{2} = \frac{\log_2(n+1)}{2} = \Theta(\log n).
+$$
+
+::: {.callout-note title="Aside (mine, not the lecturer's)"}
+The integrality gap gives a *barrier for LP-based proofs*, not for all algorithms. For set cover, the barrier turns out to be real: Feige (1998) showed that no polynomial-time algorithm can beat $\ln n$ unless SAT can be solved in $n^{O(\log \log n)}$ time. This result uses the PCP theorem — probabilistically checkable proofs — which is beyond this course's scope.
+:::
+
+
+## Approximation schemes: PTAS, FPTAS, FPRAS {#sec-schemes}
+
+For some problems, we want more than a constant-factor approximation — we want $(1 + \varepsilon)$-OPT for any $\varepsilon > 0$.
+
+::: {.callout-important title="Definitions"}
+For a minimization problem (swap $1+\varepsilon$ with $1-\varepsilon$ for maximization):
+
+- **PTAS** (polynomial-time approximation scheme): for every fixed $\varepsilon > 0$, achieves $(1+\varepsilon)$-OPT in time $n^{f(1/\varepsilon)}$. The exponent may depend on $\varepsilon$.
+- **FPTAS** (fully polynomial-time approximation scheme): achieves $(1+\varepsilon)$-OPT in time $\text{poly}(n, 1/\varepsilon)$. No $\varepsilon$ in the exponent.
+- **FPRAS** (fully polynomial-time randomized approximation scheme): like FPTAS, but the algorithm is randomized and may fail with probability at most $1/3$.
+:::
+
+::: {.callout-tip}
+Why probability $1/3$? Because you can amplify: run the algorithm $O(\log(1/\delta))$ times and take the median. If each run succeeds with probability $\ge 2/3$, the median is correct with probability $\ge 1 - \delta$. This amplification works because $1/3 < 1/2$ — any constant failure probability strictly below $1/2$ suffices.
+:::
+
+
+## Knapsack {#sec-knapsack}
+
+### Problem definition {#sec-knapsack-def}
+
+You have a knapsack of capacity $W$ and $n$ items. Item $i$ has weight $w_i$ and value $v_i$. Pack a subset of items to maximize total value without exceeding the weight limit:
+
+$$
+\max \sum_i v_i x_i \quad \text{s.t.} \quad \sum_i w_i x_i \le W, \quad x_i \in \{0,1\}.
+$$ {#eq-knapsack}
+
+### Exact solutions via dynamic programming {#sec-knapsack-dp}
+
+Knapsack is NP-hard, but admits pseudo-polynomial time algorithms:
+
+**DP by weight.** Define $f(i, b)$ = maximum value using items $\{1, \ldots, i\}$ with remaining capacity $b$:
+
+$$
+f(i, b) = \begin{cases} 0 & \text{if } i = 0, \\ \max\bigl(f(i-1, b),\; v_i + f(i-1, b - w_i)\bigr) & \text{if } b \ge w_i, \\ f(i-1, b) & \text{otherwise.} \end{cases}
+$$ {#eq-dp-weight}
+
+Running time: $O(nW)$. This is *pseudo-polynomial* — polynomial in $W$, but $W$ can be exponential in the input size $\log W$.
+
+```python
+def knapsack_by_weight(weights, values, W):
+    n = len(weights)
+    # f[i][b] = max value using items 0..i-1 with capacity b
+    f = [[0] * (W + 1) for _ in range(n + 1)]
+    for i in range(1, n + 1):
+        for b in range(W + 1):
+            f[i][b] = f[i-1][b]
+            if b >= weights[i-1]:
+                f[i][b] = max(f[i][b], values[i-1] + f[i-1][b - weights[i-1]])
+    return f[n][W]
+```
+
+**DP by value.** Define $g(i, p)$ = minimum weight to achieve value exactly $p$ using items $\{1, \ldots, i\}$. Running time: $O(n \cdot V)$ where $V = \sum v_i$. Also pseudo-polynomial.
+
+::: {.callout-warning}
+Neither DP is truly polynomial. Writing $W$ takes $\log W$ bits, so $O(nW)$ is exponential in the input size. This is why knapsack is NP-hard despite having a "fast" DP.
+:::
+
+### Fractional knapsack and the greedy approach {#sec-fractional}
+
+If items can be split, the optimal strategy is to sort by value-to-weight ratio $v_i / w_i$ in decreasing order and fill the knapsack greedily. The last item may be taken fractionally.
+
+A natural greedy algorithm for integral knapsack does the same but stops when the next item doesn't fit. This can perform arbitrarily badly:
+
+**Bad example.** Item 1: $v_1 = 2, w_1 = 1$. Item 2: $v_2 = W, w_2 = W$. Greedy takes item 1 (better ratio) and can't fit item 2. OPT takes item 2 for value $W$.
+
+### Modified greedy: a 2-approximation {#sec-modified-greedy}
+
+Take the *better* of: (a) the greedy output, or (b) the single most valuable item (that fits).
+
+::: {.callout-important title="Lemma"}
+Suppose greedy takes items in ratio order and fails to fit item $k$. Then $\sum_{i=1}^k v_i \ge \text{OPT}$.
+:::
+
+**Proof.** The fractional optimum takes items $1, \ldots, k-1$ fully and a fraction of item $k$, so $\text{OPT}_{\text{frac}} \le \sum_{i=1}^k v_i$. Since $\text{OPT} \le \text{OPT}_{\text{frac}}$, the lemma follows.
+
+**2-approximation proof.** By the lemma, $\sum_{i=1}^{k-1} v_i + v_k \ge \text{OPT}$. One of $\sum_{i=1}^{k-1} v_i$ (greedy output) or $v_k$ (most valuable item) is at least $\text{OPT}/2$.
+
+<!-- TikZ: Bar chart showing items sorted by v_i/w_i ratio. Items 1 through k-1 fit in the knapsack (shaded green). Item k overflows (shaded red, partially sticking out). Bracket over all k items labeled "≥ OPT". Bracket over items 1..k-1 labeled "greedy output". -->
+
+### PTAS for knapsack {#sec-knapsack-ptas}
+
+Two observations drive the PTAS:
+
+1. **If no item has value $> \varepsilon \cdot \text{OPT}$**, greedy achieves $\ge (1 - \varepsilon) \cdot \text{OPT}$. (By the lemma, greedy misses at most one item, worth $\le \varepsilon \cdot \text{OPT}$.)
+2. **At most $1/\varepsilon$ items** in OPT can have value $> \varepsilon \cdot \text{OPT}$.
+
+The algorithm:
+
+1. **Enumerate** all subsets $S$ of size at most $1/\varepsilon$ from the $n$ items. There are $O(n^{1/\varepsilon})$ such subsets.
+2. For each $S$ that fits in the knapsack: remove all items with value larger than any item in $S$, then **run greedy** on the remaining items.
+3. Return the best solution found.
+
+**Correctness.** In some iteration, $S$ matches the high-value items in OPT. After removing items with higher value, greedy operates on "small" items (all $\le \varepsilon \cdot \text{OPT}$) and by observation 1 loses at most $\varepsilon \cdot \text{OPT}$.
+
+**Running time.** $O(n^{1/\varepsilon} \cdot \text{poly}(n))$ — polynomial for fixed $\varepsilon$, but the exponent depends on $\varepsilon$. This is a PTAS, not an FPTAS.
+
+```python
+from itertools import combinations
+
+def knapsack_ptas(weights, values, W, epsilon):
+    n = len(weights)
+    max_size = int(1 / epsilon)
+    best_value = 0
+
+    for size in range(max_size + 1):
+        for S in combinations(range(n), size):
+            s_weight = sum(weights[i] for i in S)
+            if s_weight > W:
+                continue
+            s_value = sum(values[i] for i in S)
+            max_val_in_S = max((values[i] for i in S), default=0)
+
+            # Greedy on remaining small items
+            remaining = [(values[j] / weights[j], j) for j in range(n)
+                         if j not in S and values[j] <= max_val_in_S]
+            remaining.sort(reverse=True)
+
+            cap_left = W - s_weight
+            greedy_val = s_value
+            for _, j in remaining:
+                if weights[j] <= cap_left:
+                    greedy_val += values[j]
+                    cap_left -= weights[j]
+            best_value = max(best_value, greedy_val)
+
+    return best_value
+```
+
+::: {.callout-caution}
+The code above is correct but runs in $O(n^{1/\varepsilon + 1})$ time. For large $1/\varepsilon$, the inner loop over combinations dominates. This is still polynomial for fixed $\varepsilon$, but not practical for very small $\varepsilon$ — that is exactly why an FPTAS (next lecture) is worth pursuing.
+:::
+
+
+## Cheat sheet {#sec-cheat-sheet}
+
+::: {.callout-important title="Cheat sheet — Lecture 11"}
+
+**Dual fitting (set cover).** Greedy for weighted set cover is an $H_n$-approximation. Proof: assign dual prices $y_e = c_S / |\text{new}|$; the dual scaled by $1/H_n$ is feasible.
+
+**Primal-dual (vertex cover).** Pick uncovered edge, take both endpoints, set $y_e = 1$. Primal cost $\le 2 \times$ dual cost $\Rightarrow$ 2-approximation.
+
+**Integrality gap.** $\sup_{\text{instances}} \text{OPT}_{\text{IP}} / \text{OPT}_{\text{LP}}$.
+
+- Vertex cover LP: gap = 2 (tight, via $K_n$).
+- Set cover LP: gap = $\Theta(\log n)$ (tight, via $\mathbb{F}_2^q$ construction).
+
+**Approximation schemes.**
+
+| Scheme | Time | Error |
+|--------|------|-------|
+| PTAS | $n^{f(1/\varepsilon)}$ | $(1 \pm \varepsilon) \cdot \text{OPT}$ |
+| FPTAS | $\text{poly}(n, 1/\varepsilon)$ | $(1 \pm \varepsilon) \cdot \text{OPT}$ |
+| FPRAS | $\text{poly}(n, 1/\varepsilon)$ | $(1 \pm \varepsilon) \cdot \text{OPT}$, fails w.p. $\le 1/3$ |
+
+**Knapsack.**
+
+- Exact DP: $O(nW)$ or $O(nV)$ — pseudo-polynomial.
+- Modified greedy: max(greedy output, best single item) is a 2-approximation.
+- PTAS: enumerate $\le 1/\varepsilon$ high-value items, greedy on the rest. Time $O(n^{1/\varepsilon})$.
+:::
+
+
+## FAQ — questions students actually asked {#sec-faq}
+
+**Q: Is the LP relaxation of set cover unique?**
+No. There are many ways to formulate set cover as an integer program, and each gives a different LP relaxation with potentially different integrality gaps. The Sherali–Adams hierarchy systematically tightens LP relaxations, eventually recovering the integer program — but the LP grows to exponential size.
+
+**Q: You said we "cannot hope to achieve" a ratio better than $\beta$ — does that mean no algorithm can?**
+No. It means no algorithm whose analysis *compares to the LP optimum* can beat $\beta$. A completely different approach (not LP-based) might still do better. For set cover, however, Feige's result says even non-LP-based algorithms can't beat $\ln n$ (assuming standard complexity assumptions).
+
+**Q: For the DP running time $O(nW)$ — why isn't that polynomial?**
+Polynomial time means polynomial in the *bit length* of the input. The number $W$ is written in $\log W$ bits, so $O(nW)$ is exponential in the input size. Algorithms with running time polynomial in the *value* of a number (rather than its bit length) are called *pseudo-polynomial*.
+
+**Q: Why is $1/3$ the magic failure probability for FPRAS?**
+Any constant strictly less than $1/2$ works. Run the algorithm $O(\log(1/\delta))$ times and take the median — by a Chernoff argument, the median is correct with probability $\ge 1 - \delta$. The constant $1/3$ is conventional because it is the smallest reciprocal integer that is strictly less than $1/2$.
+
+**Q: The integrality gap for vertex cover — why doesn't $K_n$ with $x_v = 1/2$ mean the gap is unbounded?**
+The gap is a *ratio*. The LP gives $n/2$; the IP requires $n-1$. The ratio $(n-1)/(n/2) \to 2$, which is bounded.
+
+**Q: In the PTAS for knapsack, why remove items with value bigger than items in $S$?**
+Because $S$ is supposed to be the set of *all* high-value items in OPT. Any item with higher value than everything in $S$ would contradict the assumption that $S$ captures the high-value items. Removing them ensures greedy operates only on items where missing one costs at most $\varepsilon \cdot \text{OPT}$.
+
+
+## Further reading {#sec-further-reading}
+
+- **Johnson (1974).** "Approximation algorithms for combinatorial problems." *Journal of Computer and System Sciences*. The original $H_n$ analysis of greedy set cover (unweighted case).
+
+- **Chvátal (1979).** "A greedy heuristic for the set-covering problem." *Mathematics of Operations Research*. Extends the greedy analysis to weighted set cover.
+
+- **Feige (1998).** "A threshold of $\ln n$ for approximating set cover." *Journal of the ACM*. Proves that beating $\ln n$ is as hard as solving SAT in sub-exponential time, using the PCP theorem.
+
+- **Lawler (1979).** "Fast approximation algorithms for knapsack problems." *Mathematics of Operations Research*. The most efficient FPTAS for knapsack: running time $O(n \log(1/\varepsilon) + 1/\varepsilon^4)$.
+
+- **Arora, Lund, Motwani, Sudan, Szegedy (1998).** "Proof verification and the hardness of approximation problems." *Journal of the ACM*. The PCP theorem — the foundation for most inapproximability results.
+
+
+## Try it yourself {#sec-exercises}
+
+1. **Integrality gap for a triangle.** Write down the vertex cover LP for the triangle graph $K_3$. Find the optimal fractional solution and the optimal integer solution. What is the integrality gap?
+
+2. **Dual fitting for vertex cover.** We proved vertex cover's 2-approximation via pure primal-dual. Re-prove it using dual fitting: set $y_e = c/(k+1)$ where $c$ is some cost and $k$ is some quantity. What scaling factor do you need to restore dual feasibility?
+
+3. **Set cover gap instance.** For $q = 3$ (so $n = 7$), explicitly list all the sets $S_\alpha$ in the $\mathbb{F}_2^q$ integrality gap construction. Verify that each element is in exactly 4 of the 8 sets, and find a minimum set cover.
+
+4. **Greedy vs. modified greedy.** Construct a knapsack instance with $n = 3$ items where greedy (sorted by $v_i/w_i$, take until full) achieves less than $0.6 \cdot \text{OPT}$, but modified greedy achieves at least $0.5 \cdot \text{OPT}$.
+
+5. **Implement the PTAS.** Using the PTAS code above, solve the following instance with $\varepsilon = 0.25$: $W = 50$, items = $[(v=60, w=10), (v=100, w=20), (v=120, w=30), (v=40, w=15)]$. Verify that your answer is within $(1-\varepsilon) \cdot \text{OPT}$.

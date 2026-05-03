@@ -1,0 +1,313 @@
+---
+title: "The Word-RAM Model and Predecessor Data Structures"
+subtitle: "COMPSCI 224 Lecture 1 — Fall 2014"
+author: "Companion notes by Kun Deng"
+date: today
+abstract: |
+  The comparison-based $\Omega(n \log n)$ sorting lower bound is an artifact of
+  a weak computational model. By moving to the Word-RAM — where keys are
+  integers fitting in $w$-bit machine words and bitwise operations are free —
+  predecessor queries can be answered in $O(\log w)$ time (van Emde Boas trees)
+  or $O(\log_w n)$ time (fusion trees), beating binary search and implying
+  $O(n\sqrt{\log n})$ sorting.
+---
+
+## Why this lecture matters {#sec-why}
+
+Sorting in $O(n \log n)$ is optimal only if your algorithm is limited to pairwise comparisons. Real machines manipulate integers with shifts, masks, and arithmetic — operations that the comparison model ignores. This lecture formalises that power as the Word-RAM model and immediately exploits it to build a predecessor data structure (van Emde Boas trees) whose query time depends on the *word size*, not the *number of elements*.
+
+::: {.callout-tip title="The 30-second story"}
+1. The $\Omega(n\log n)$ sorting bound assumes comparison-only access to keys.
+2. Real CPUs perform bitwise operations, shifts, and arithmetic in $O(1)$ — the **Word-RAM** model captures this.
+3. The **static predecessor problem** asks: given a stored set $S$, find the largest element $\leq z$.
+4. **Van Emde Boas trees** solve predecessor in $O(\log w)$ time by recursively splitting the universe into $\sqrt{u}$-sized clusters.
+5. Hashing compresses space from $O(u)$ to $O(n)$; **Y-fast tries** achieve the same bounds via indirection.
+6. Combined with fusion trees (next lecture), predecessor is solvable in $O(\sqrt{\log n})$, implying sub-$n\log n$ sorting.
+:::
+
+
+## The Word-RAM model {#sec-word-ram}
+
+Binary search trees solve predecessor in $O(\log n)$ using only comparisons. To go faster, grant the algorithm more power.
+
+**Intuition.** When you write C code, you routinely shift bits, mask with AND, and do integer arithmetic — all in one clock cycle. The Word-RAM model simply says: *count those operations*.
+
+::: {.callout-note title="Model definition"}
+Items are integers in $\{0, 1, \ldots, 2^w - 1\}$, where $w$ is the **word size** and $u = 2^w$ is the **universe size**. Given two words $x, y$, the following take $O(1)$ time:
+
+- Integer arithmetic: $+$, $-$, $\times$, $\lfloor \cdot / \cdot \rfloor$
+- Bitwise: NOT, AND, OR, XOR
+- Bit shifts: $x \ll k$, $x \gg k$
+
+We always assume $w \geq \log n$ (a pointer must address at least $n$ memory cells).
+:::
+
+Multiplication produces a result fitting in two words — the upper and lower halves are individually accessible. This is consistent with how hardware multipliers work.
+
+<!-- TikZ: A single w-bit word split into upper and lower halves, with labels showing the operations allowed between two words. -->
+
+
+## The static predecessor problem {#sec-predecessor}
+
+**Problem.** Store a set $S = \{x_1, \ldots, x_n\}$ of $w$-bit integers. Support $\text{pred}(z) = \max\{x \in S : x < z\}$. Minimise space and query time.
+
+A sorted array with binary search gives $O(\log n)$ query (static). A balanced BST (e.g., red-black tree) gives $O(\log n)$ query and $O(\log n)$ updates (dynamic).
+
+**Connection to sorting.** A dynamic predecessor structure immediately yields a sorting algorithm: insert all $n$ elements, then extract them in order by repeatedly taking the predecessor of the current maximum. If each operation costs $T$, sorting costs $O(nT)$.
+
+::: {.callout-important title="Results at a glance"}
+| Data structure | Query | Update | Space | Model |
+|---|---|---|---|---|
+| Balanced BST | $O(\log n)$ | $O(\log n)$ | $O(n)$ | comparison |
+| Van Emde Boas | $O(\log w)$ | $O(\log w)$ | $O(n)$* | Word-RAM |
+| Fusion trees | $O(\log_w n)$ | — (static) | $O(n)$ | Word-RAM |
+| Best of both | $O(\sqrt{\log n})$ | — | $O(n)$ | Word-RAM |
+
+*With hashing.
+:::
+
+Since $w \geq \log n$, the minimum of $\log w$ and $\log_w n$ is maximised when the two are equal: $\log w = \log n / \log w$, giving $\log n = (\log w)^2$, hence both terms equal $\sqrt{\log n}$.
+
+**Open problem.** Can integers be sorted in $O(n)$ time in the Word-RAM? The best known deterministic bound is $O(n \log\log n)$ (Han, STOC 2002); the best randomised bound is $O(n\sqrt{\log\log n})$ (Han and Thorup, FOCS 2002).
+
+
+## Van Emde Boas trees {#sec-veb}
+
+### The recursive idea
+
+Think of a universe of size $u$ as a two-digit number in base $\sqrt{u}$. Every integer $x \in \{0,\ldots,u-1\}$ decomposes as:
+
+$$
+x = c \cdot \sqrt{u} + i, \qquad c = \lfloor x / \sqrt{u} \rfloor,\quad i = x \bmod \sqrt{u}
+$$ {#eq-veb-decompose}
+
+Here $c$ is the **cluster index** and $i$ is the **position within the cluster**. Both fit in $\frac{w}{2}$ bits, extractable in $O(1)$ via a shift and a mask.
+
+A VEB structure on universe size $u$ stores:
+
+- `v.cluster[0..√u−1]` — an array of $\sqrt{u}$ sub-structures, each on universe $\sqrt{u}$.
+- `v.summary` — a single VEB structure on universe $\sqrt{u}$ tracking which clusters are non-empty.
+- `v.min`, `v.max` — the minimum and maximum elements (integers).
+
+<!-- TikZ: A VEB node with sqrt(u) cluster boxes below it, a summary box to the side, and min/max fields. Arrows show the recursive structure. One cluster is expanded to show its own sub-clusters. -->
+
+::: {.callout-tip title="Why store min separately?"}
+The minimum is *not* stored recursively in its cluster — it lives only in the `min` field. This "lazy propagation" trick ensures that inserting into an empty cluster triggers at most one recursive call, keeping insertion $O(\log\log u)$ rather than $O(w)$.
+:::
+
+### Predecessor query {#sec-veb-query}
+
+```python
+def predecessor(v, x):
+    """Return largest element in v that is < x."""
+    c, i = high(x), low(x)        # decompose x = c*sqrt(u) + i
+
+    if x > v.max:
+        return v.max              # x exceeds everything
+
+    if v.cluster[c] is not None and v.cluster[c].min < x:
+        # predecessor is in same cluster
+        return join(c, predecessor(v.cluster[c], i))
+    else:
+        # predecessor is in an earlier cluster
+        c_prime = predecessor(v.summary, c)
+        return join(c_prime, v.cluster[c_prime].max)
+```
+
+At most one recursive call occurs in any branch, on a sub-problem of universe size $\sqrt{u}$.
+
+$$
+T(u) = T(\sqrt{u}) + O(1) \implies T(u) = O(\log\log u) = O(\log w)
+$$ {#eq-veb-query-recurrence}
+
+### Insertion {#sec-veb-insert}
+
+```python
+def insert(v, x):
+    if v.min is None:             # empty structure
+        v.min = v.max = x
+        return
+
+    if x < v.min:
+        x, v.min = v.min, x      # new min goes to buffer; old min gets inserted
+
+    c, i = high(x), low(x)
+
+    if v.cluster[c] is None or v.cluster[c].min is None:
+        insert(v.summary, c)      # mark cluster as non-empty
+        v.cluster[c] = new_veb()
+        v.cluster[c].min = v.cluster[c].max = i
+    else:
+        insert(v.cluster[c], i)
+
+    if x > v.max:
+        v.max = x
+```
+
+**Key insight:** the two recursive calls (`insert(v.summary, c)` and `insert(v.cluster[c], i)`) never *both* recurse deeper. If the cluster was empty, inserting $c$ into the summary recurses, but inserting $i$ into the new cluster hits the empty-structure base case immediately. Therefore:
+
+$$
+T(u) = T(\sqrt{u}) + O(1) \implies T(u) = O(\log\log u)
+$$ {#eq-veb-insert-recurrence}
+
+<!-- TikZ: Step-by-step state diagram showing insertion of a key. Panel 1: empty cluster, min buffer absorbs. Panel 2: new element smaller than min — swap. Panel 3: cluster was empty — summary updated, cluster gets singleton. -->
+
+::: {.callout-warning title="Without the min trick, insertion is $O(w)$"}
+If the minimum were stored recursively in its cluster, both the summary insertion and the cluster insertion could recurse, giving $T(u) = 2T(\sqrt{u}) + O(1)$, which solves to $T(u) = O(w)$.
+:::
+
+
+## From $O(u)$ space to $O(n)$ space {#sec-veb-space}
+
+### The space problem
+
+The naive recurrence for space is:
+
+$$
+S(u) = (\sqrt{u} + 1)\,S(\sqrt{u}) + O(1) \implies S(u) = \Theta(u)
+$$
+
+Most clusters are empty — storing $\sqrt{u}$ pointers regardless of occupancy wastes space.
+
+### Solution: replace arrays with hash tables
+
+Replace each cluster array with a **dictionary** (hash table). Keys are cluster indices $c$; values are pointers to the corresponding non-empty VEB sub-structure.
+
+::: {.callout-note title="The dictionary problem"}
+A dictionary stores key-value pairs (keys and values each fit in one word) with:
+
+- `query(k)`: return associated value, or null — $O(1)$ worst-case
+- `insert(k, v)` / `delete(k)`: $O(1)$ expected (or whp)
+
+Linear space. Achieved by dynamic perfect hashing (Dietzfelbinger et al.).
+:::
+
+**Why $O(n)$ space?** Each element is stored as the `min` of exactly one sub-structure at some recursion level. Charge the cost of the hash-table entry (cluster-id + pointer = 2 words) to that minimum element. Every element is charged exactly once.
+
+<!-- TikZ: A VEB node with a hash table replacing the cluster array. Only 3 of sqrt(u) clusters are non-empty. Arrows from hash table entries to sub-VEB nodes. A "charge" arrow from each sub-VEB's min to its parent's hash table entry. -->
+
+
+## X-fast tries and Y-fast tries {#sec-xfast-yfast}
+
+An alternative route to the same $O(\log\log u)$ bound uses a binary trie over the universe.
+
+### X-fast trie
+
+1. Store all $n$ elements in a doubly linked list (sorted order).
+2. Build a perfect binary tree of height $w$ over the $u$ leaves. Each internal node stores the OR of its children (1 if any descendant is present).
+3. For a query $z$: walk up from leaf $z$ until finding a 1-node, then locate the predecessor or successor via the linked list.
+
+The leaf-to-root path is **monotone** (0's then 1's), so binary search finds the transition in $O(\log w) = O(\log\log u)$ steps. To binary-search on ancestors, store the tree as an array (heap-order); the $k$-th ancestor is at index $\lfloor \text{pos} / 2^k \rfloor$.
+
+**Space issue:** storing all internal nodes takes $O(u)$. Fix: store only the 1-nodes in a hash table, one per tree level. Space becomes $O(nw)$ — better than $u$ but not linear.
+
+### Y-fast trie (Willard, IPL 1983) {#sec-yfast}
+
+Apply **indirection**: partition the $n$ elements into $n/w$ groups of $\Theta(w)$ consecutive elements each. Build an X-fast trie on the $n/w$ representatives (one per group). Store each group in a balanced BST.
+
+| | Space | Query | Insert (amortised) |
+|---|---|---|---|
+| X-fast trie on $n/w$ items | $O(n)$ | $O(\log\log u)$ | $O(w)$ |
+| BST within a group ($\Theta(w)$ items) | $O(w)$ | $O(\log w)$ | $O(\log w)$ |
+| **Y-fast trie total** | $O(n)$ | $O(\log\log u)$ | $O(\log\log u)$ amortised |
+
+When a group overflows (size $> 2w$), split it and insert a new representative into the X-fast trie. This happens every $\Theta(w)$ insertions, amortising the $O(w)$ X-fast insertion cost.
+
+::: {.callout-tip title="Indirection as a general technique"}
+Whenever a data structure has cost $C$ for $n$ items but you want cost $C$ for $n/k$ items with $O(\log k)$ overhead per group, indirection lets you trade a factor of $k$ in the global structure's size for a $\log k$ local search cost. This trick recurs throughout advanced data structures.
+:::
+
+
+## Optimality {#sec-optimality}
+
+A matching lower bound (Patrascu and Thorup, FOCS 2006) shows that for any linear-space data structure in the Word-RAM, predecessor query time is $\Omega(\min(\log w, \log_w n))$. Van Emde Boas trees and fusion trees are therefore **optimal** (up to constants) for the static predecessor problem.
+
+
+## Cheat sheet {#sec-cheatsheet}
+
+::: {.callout-important title="Cheat sheet — Lecture 1"}
+**Word-RAM model:** integers in $\{0,\ldots,2^w-1\}$; arithmetic, bitwise ops, shifts in $O(1)$; $w \geq \log n$.
+
+**Static predecessor:** store $n$ keys, answer $\text{pred}(z) = \max\{x \in S : x < z\}$.
+
+**Van Emde Boas trees (universe $u = 2^w$):**
+
+- Decompose $x = c\sqrt{u} + i$. Store $\sqrt{u}$ clusters + summary + min/max.
+- Query/insert: $T(u) = T(\sqrt{u}) + O(1) = O(\log\log u) = O(\log w)$.
+- Min stored in buffer (not recursively) — prevents double recursion.
+- Space $O(u)$ with arrays; $O(n)$ with hash tables (charge to min elements).
+
+**X-fast trie:** binary trie + hash tables per level. Query $O(\log w)$, space $O(nw)$.
+
+**Y-fast trie:** indirection — $n/w$ groups in X-fast trie, $\Theta(w)$-item BSTs. Query $O(\log w)$, space $O(n)$, amortised insert $O(\log w)$.
+
+**Fusion trees (next lecture):** query $O(\log_w n)$, space $O(n)$.
+
+**Combined:** $O(\min(\log w, \log_w n)) = O(\sqrt{\log n})$. Optimal for linear space.
+:::
+
+
+## FAQ — questions students actually asked {#sec-faq}
+
+**Q: If multiplication overflows a word, what happens?**
+A: The product of two $w$-bit integers fits in $2w$ bits. You can access the upper and lower halves separately. Alternatively, treat overflow as modular arithmetic (the low-order $w$ bits). For fusion trees (next lecture), we will exploit full $2w$-bit products.
+
+**Q: Why do we need dynamic predecessor for sorting — why not static?**
+A: Building a static predecessor structure requires polynomial preprocessing (you already need the sorted order). A *dynamic* structure starts empty and accepts insertions one-by-one, which is exactly what a sorting algorithm does.
+
+**Q: In the VEB space argument, where exactly does each element get "charged"?**
+A: Every element $x$ is the `min` of exactly one sub-VEB at some recursion depth. The hash-table entry in $x$'s parent node (storing the cluster-id and pointer) is charged to $x$. Since each element is a minimum in exactly one place, total charge is $O(n)$.
+
+**Q: Can the VEB hash-table solution be made fully deterministic (worst-case constant query)?**
+A: Yes. Dynamic perfect hashing (e.g., cuckoo hashing with worst-case $O(1)$ lookup) suffices. The insertion remains expected or high-probability $O(1)$, so VEB updates are $O(\log w)$ in expectation. Fully worst-case $O(\log w)$ updates require deamortisation techniques.
+
+**Q: A student suggested storing a Git repo for scribe notes — is there context?**
+A: A student proposed using version control instead of static PDFs on the course website. This is a logistics aside, not algorithmically relevant.
+
+
+## Further reading {#sec-further-reading}
+
+- **van Emde Boas, P.** "Preserving order in a forest in less than logarithmic time and linear space." *Information Processing Letters*, 6(3):80–82, 1977. — The original data structure; space $O(u)$.
+
+- **Willard, D. E.** "Log-logarithmic worst-case range queries are possible in space $\Theta(N)$." *Information Processing Letters*, 17(2):81–84, 1983. — X-fast and Y-fast tries achieving linear space.
+
+- **Fredman, M. L. and Willard, D. E.** "Surpassing the information theoretic bound with fusion trees." *Journal of Computer and System Sciences*, 47(3):424–436, 1993. — Fusion trees; $O(\log_w n)$ predecessor.
+
+- **Patrascu, M. and Thorup, M.** "Time-space trade-offs for predecessor search." *Proc. 38th STOC*, 2006. — Matching $\Omega(\min(\log w, \log_w n))$ lower bound.
+
+- **Han, Y.** "Deterministic sorting in $O(n \log\log n)$ time and linear space." *Proc. 34th STOC*, 2002. — Best known deterministic integer sorting.
+
+
+## Try it yourself {#sec-exercises}
+
+1. **Warm-up.** Show that deletion in a VEB tree also takes $O(\log\log u)$ time. Describe the pseudocode, paying attention to how `min` and `max` are maintained and when the summary must be updated.
+
+2. **Space accounting.** The "charge to the minimum" argument assumes each element is the minimum of exactly one sub-structure. Construct a small example ($u = 16$, $n = 4$) and trace which element is charged at each recursion level. Verify total charge is $4 \cdot O(1) = O(n)$.
+
+3. **Y-fast split cost.** In a Y-fast trie, when a group of size $2w$ splits, you insert a new representative into the X-fast trie (cost $O(w)$). Prove that the amortised insertion cost is $O(\log w)$ using the potential method. (Hint: let the potential of a group of size $s$ be $\Phi = c \cdot |s - w|$ for an appropriate constant $c$.)
+
+4. **Implementation.** Implement a simplified VEB tree in Python for universe size $u = 2^{16}$. Support `insert`, `predecessor`, and `successor`. Verify experimentally that query time is insensitive to $n$ (for fixed $u$) and grows as $\log w$ when you vary $u$.
+
+```python
+class VEB:
+    def __init__(self, u):
+        self.u = u
+        self.min = None
+        self.max = None
+        if u > 2:
+            self.sqrt_u = int(u ** 0.5)
+            self.cluster = {}          # hash table: cluster_id -> VEB(sqrt_u)
+            self.summary = VEB(self.sqrt_u)
+
+    def high(self, x):
+        return x // self.sqrt_u
+
+    def low(self, x):
+        return x % self.sqrt_u
+
+    def insert(self, x):
+        # Implement following the pseudocode above
+        ...
+```
+
+5. **Lower bound intuition.** The Patrascu-Thorup lower bound shows $\Omega(\min(\log w, \log_w n))$ for linear-space predecessor. Explain informally why making the word size larger doesn't help indefinitely: what happens to fusion trees as $w$ grows, and what happens to VEB trees?

@@ -1,0 +1,7 @@
+_book/
+_freeze/
+.quarto/
+__pycache__/
+.DS_Store
+transcripts/
+.venv/

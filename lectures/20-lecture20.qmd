@@ -1,0 +1,381 @@
+---
+title: "Multiplicative Weights for LPs and Introduction to Network Flows"
+subtitle: "COMPSCI 224 Lecture 20 — Fall 2014"
+author: "Companion notes by Kun Deng"
+date: today
+abstract: |
+  Multiplicative weights, applied through a row-bounded oracle, yields an approximate
+  LP feasibility solver whose iteration count depends only on the oracle's error and the
+  number of constraints.  The set cover LP illustrates the technique: a greedy oracle
+  gives $O(m^2 \log m / \varepsilon^2)$ iterations for a $(1+\varepsilon)$-approximate
+  fractional solution.  The lecture then pivots to network flows, defining feasible flows,
+  residual graphs, and the Ford–Fulkerson augmenting-path framework, setting the stage
+  for faster combinatorial flow algorithms.
+---
+
+## Why this lecture matters
+
+Multiplicative weights is one of the most versatile algorithmic paradigms in theoretical CS, but its power is only realised once you can *plug it in* to concrete problems.  This lecture shows the plug-in mechanism: reduce LP feasibility to a sequence of simpler "one-constraint" sub-problems, each solved by a *row-bounded oracle*.  The oracle abstraction cleanly separates the general framework from the problem-specific cleverness.  The second half introduces max flow—a problem whose study has driven decades of algorithmic progress in graph theory, LP solvers, and data structures.
+
+::: {.callout-tip title="30-second story"}
+1. The multiplicative weights theorem bounds cumulative expected cost against the best expert, with regret $O(\sqrt{T \ln n})$.
+2. LP feasibility with $m$ constraints reduces to repeatedly solving a single-constraint sub-problem via a *row-bounded oracle*.
+3. Averaging the oracle's outputs over $O(\gamma^2 \log m / \varepsilon^2)$ rounds yields a point that violates every constraint by at most $\varepsilon$.
+4. For fractional set cover, a greedy oracle picks the set with the highest weighted coverage, giving $\gamma \leq m$.
+5. Max flow is an LP, but combinatorial algorithms (Ford–Fulkerson) exploit graph structure to avoid generic LP solvers.
+6. Ford–Fulkerson repeatedly augments along residual-graph paths; correctness follows from the max-flow min-cut theorem.
+:::
+
+
+## Multiplicative weights for LP feasibility {#sec-mw-lp}
+
+### The multiplicative weights guarantee (recap)
+
+Recall the theorem from Lecture 19.  There are $n$ experts and $T$ rounds.  In round $t$, the algorithm outputs a probability vector $p_t \in \Delta_n$ and then observes a cost vector $m_t \in [-1,1]^n$.  The multiplicative weights update rule guarantees:
+
+$$
+\sum_{t=1}^{T} m_t \cdot p_t \;\leq\; \min_{i \in [n]} \sum_{t=1}^{T} m_{t,i} \;+\; \varepsilon \sum_{t=1}^{T} |m_{t,i}| \;+\; \frac{\ln n}{\varepsilon}
+$$ {#eq-mw-regret}
+
+for any $\varepsilon \in (0, 1/2)$.  Since every $|m_{t,i}| \leq 1$, the absolute-value sum is at most $T$, so the regret (the excess beyond the best expert) is at most $\varepsilon T + (\ln n)/\varepsilon$.  Choosing $\varepsilon = \sqrt{(\ln n)/T}$ balances these terms, giving average regret $O(\sqrt{(\ln n)/T})$ that vanishes as $T$ grows.
+
+### The LP feasibility problem and row-bounded oracles
+
+Consider the following feasibility problem:
+
+$$
+\text{Find } x \in P \;\text{ such that }\; Ax \geq b
+$$ {#eq-lp-feas}
+
+where $P$ is a convex set and $A$ is an $m \times n$ matrix.  There are $m$ constraints (the rows of $A$).  The key insight is to *softify* the $m$ constraints into a single constraint by taking a weighted combination.
+
+**Sub-problem $(\star)$.**  Given a probability vector $p$ over the $m$ constraints, find $x \in P$ such that $p^\top A x \geq p^\top b$.
+
+::: {.callout-note title="Why is $(\star)$ easier?"}
+The original problem has $m$ constraints (plus the membership in $P$).  Sub-problem $(\star)$ has *one* linear constraint (plus membership in $P$).  If the original problem is feasible, then $(\star)$ is always feasible: any $x$ satisfying $Ax \geq b$ satisfies every non-negative combination of those inequalities.
+:::
+
+A **$\gamma$-bounded oracle** is an algorithm that, given $(\star)$:
+
+- **If feasible:** returns $x \in P$ such that $|a_i \cdot x - b_i| \leq \gamma$ for every row $i$.
+- **If infeasible:** reports "infeasible" (which implies the original problem is infeasible).
+
+The parameter $\gamma$ measures how far the oracle's solution can violate individual constraints in absolute value.  The oracle need not return a point feasible for the original system—it only solves the easier one-constraint problem while bounding row-wise error.
+
+### The theorem: MW + oracle $\Rightarrow$ approximate LP solver
+
+::: {.callout-important title="MW for LP feasibility"}
+Given a $\gamma$-bounded oracle with $\gamma \geq \varepsilon/2$, multiplicative weights finds $\tilde{x} \in P$ satisfying $a_i \cdot \tilde{x} \geq b_i - \varepsilon$ for all $i$ in
+
+$$
+T = O\!\left(\frac{\gamma^2 \ln m}{\varepsilon^2}\right)
+$$ {#eq-mw-lp-iters}
+
+iterations.
+:::
+
+### Proof sketch {#sec-mw-lp-proof}
+
+Map the LP to the experts framework:
+
+- **Experts** = the $m$ constraints.
+- **Day $t$:** Given the current probability vector $p_t$, query the oracle.  If it reports infeasible, halt (the original LP is infeasible).  Otherwise, receive $x_t \in P$.
+- **Cost vector:** Define $m_t = \frac{1}{\gamma}(Ax_t - b)$.  Dividing by $\gamma$ ensures each entry lies in $[-1, 1]$ (the oracle's guarantee).
+
+The oracle guarantees $p_t^\top A x_t \geq p_t^\top b$, so $m_t \cdot p_t = \frac{1}{\gamma}(p_t^\top A x_t - p_t^\top b) \geq 0$.
+
+Summing over all $T$ rounds, the left-hand side of @eq-mw-regret is non-negative.  The right-hand side, for every constraint $i$, gives:
+
+$$
+0 \;\leq\; \frac{1}{\gamma}\sum_{t=1}^{T}(a_i \cdot x_t - b_i) \;+\; \eta T \;+\; \frac{\ln m}{\eta}
+$$
+
+where $\eta$ is the MW error parameter (called $\eta$ to avoid confusion with the final $\varepsilon$).  Multiply through by $\gamma / T$ and define $\tilde{x} = \frac{1}{T}\sum_t x_t$ (which lies in $P$ by convexity):
+
+$$
+0 \;\leq\; a_i \cdot \tilde{x} - b_i \;+\; \gamma\eta \;+\; \frac{\gamma \ln m}{\eta T}
+$$
+
+Set $\eta = \varepsilon / (2\gamma)$ to make $\gamma \eta = \varepsilon/2$.  Set $T$ so that $\gamma \ln m / (\eta T) \leq \varepsilon/2$, giving $T = 4\gamma^2 \ln m / \varepsilon^2$.  Both error terms are at most $\varepsilon/2$, so:
+
+$$
+a_i \cdot \tilde{x} \;\geq\; b_i - \varepsilon \qquad \text{for all } i
+$$
+
+The output $\tilde{x}$ is the *average* of all oracle outputs—feasible for every constraint up to an additive $\varepsilon$.
+
+<!-- TikZ: diagram showing the MW–oracle loop: box "MW update" outputs p_t → box "Oracle" outputs x_t → cost m_t fed back; after T rounds, average x̃ = (1/T)Σx_t is the output -->
+
+
+## Application: fractional set cover {#sec-set-cover}
+
+Recall: given sets $S_1, \ldots, S_m$ covering a universe $\{1, \ldots, n\}$, the fractional set cover LP asks to minimise $\sum_s x_s$ subject to $\sum_{s \ni e} x_s \geq 1$ for every element $e$, with $x \geq 0$.
+
+To use the MW framework, separate the *hard* covering constraints (which become the experts) from the *easy* budget constraint:
+
+$$
+P = \bigl\{x \geq 0 : \textstyle\sum_s x_s \leq \beta\bigr\}
+$$
+
+Binary-search on $\beta$ (the optimal cost lies between 1 and $m$) to turn optimisation into feasibility.
+
+### Building the oracle
+
+Given probability vector $p$ over elements, the oracle maximises $p^\top A x$ subject to $x \in P$.  Write out the objective:
+
+$$
+p^\top A x = \sum_e p_e \sum_{s \ni e} x_s = \sum_s x_s \cdot p(s), \qquad \text{where } p(s) = \sum_{e \in s} p_e
+$$
+
+This is a linear function of $x$ with non-negative coefficients $p(s)$.  Maximising over $P$ (a scaled simplex) is trivial: put all mass on the set with the largest $p(s)$.
+
+$$
+\text{Oracle: set } x = \beta \cdot e_{s^*} \quad\text{where}\quad s^* = \arg\max_s\; p(s)
+$$
+
+If $\beta \cdot p(s^*) < 1$, the sub-problem is infeasible (the maximum weighted coverage is less than 1 even using full budget), so report infeasible.
+
+### Bounding $\gamma$
+
+For any element $e$, the constraint violation $|a_e \cdot x - b_e|$ has two cases:
+
+- $e \notin s^*$: the dot product is 0, so the violation is $|0 - 1| = 1$.
+- $e \in s^*$: the dot product is $\beta$, so the violation is $|\beta - 1|$.
+
+Since $\beta \in [1, m]$ (from the binary search), the worst case is $\gamma = \max(1, \beta - 1) \leq \beta \leq m$.
+
+::: {.callout-important}
+Plugging $\gamma = m$ into @eq-mw-lp-iters gives $O(m^2 \log m / \varepsilon^2)$ iterations of multiplicative weights.  Each iteration calls the oracle (linear-time scan over sets) and updates the probability vector.  Rescaling the $\varepsilon$-violated solution yields a $(1+\varepsilon)$-approximate fractional set cover.
+:::
+
+::: {.callout-note title="Aside (mine, not the lecturer's)"}
+The MW approach to LP feasibility originates in Plotkin, Shmoys, and Tardos (1995) for packing/covering LPs.  The general oracle-based framework appears in the Arora, Hazan, and Kale survey (2012), which unifies multiplicative weights, boosting, and online learning under a single umbrella.
+:::
+
+
+## Network flows: definitions {#sec-flows-defn}
+
+### Setup
+
+A **flow network** is a directed graph $G = (V, E)$ with:
+
+- Non-negative integer capacities $c_e \geq 0$ for every edge $e \in E$.
+- A distinguished **source** $s$ and **sink** $t$.
+
+Write $n = |V|$ and $m = |E|$.  Assume $G$ is connected (otherwise, run DFS first and work only with the component containing both $s$ and $t$).  Since the graph is connected, $m \geq n - 1$; all bounds will be stated in terms of $m$.
+
+### Flows
+
+An **$s$-$t$ flow** is a vector $f \in \mathbb{R}^E$ satisfying:
+
+1. **Non-negativity:** $f_e \geq 0$ for all $e$.
+2. **Conservation:** for every vertex $v \neq s, t$, the total flow entering $v$ equals the total flow leaving $v$:
+$$
+\sum_{(u,v) \in E} f_{(u,v)} = \sum_{(v,w) \in E} f_{(v,w)}
+$$ {#eq-conservation}
+3. **Source–sink balance:** the total flow leaving $s$ equals the total flow entering $t$.
+
+A flow is **feasible** if $f_e \leq c_e$ for every edge $e$.  The **value** of $f$, written $\text{val}(f)$, is the net flow leaving $s$.
+
+### A worked example
+
+Consider a graph with four vertices $\{s, a, b, t\}$ and five unit-capacity edges: $s \to a$, $s \to b$, $a \to b$, $a \to t$, $b \to t$.
+
+- The **zero flow** ($f_e = 0$ everywhere) is feasible with value 0.
+- Sending 1 unit along $s \to a \to b \to t$ gives a feasible flow of value 1.
+- Sending 1 unit along $s \to a \to t$ and 1 unit along $s \to b \to t$ gives a feasible flow of value 2.
+
+The second option is better.  The goal of max flow is to find the best possible.
+
+<!-- TikZ: small example graph with s on the left, t on the right, two intermediate vertices; all edges have unit capacity; show two flows: a yellow flow of value 1 along the top path, and a purple flow of value 2 using both top and bottom paths -->
+
+::: {.callout-tip}
+Think of flow as water shipping through pipes.  Each pipe (edge) has a maximum throughput (capacity).  Water enters at $s$ and exits at $t$; at every intermediate junction, what flows in must flow out.  The goal is to ship as much water as possible.
+:::
+
+### Max flow as a linear program
+
+Max flow is a linear program:
+
+$$
+\max \sum_{(s,u) \in E} f_{(s,u)} \quad\text{s.t.}\quad 0 \leq f_e \leq c_e \;\;\forall e, \quad \text{conservation at every } v \neq s,t
+$$ {#eq-flow-lp}
+
+Since it is an LP, one could solve it via:
+
+- **Simplex:** no known polynomial-time pivot rule.
+- **Ellipsoid:** polynomial, but depends on $\log(\max c_e)$; impractical.
+- **Interior point:** $O(\sqrt{m})$ iterations, each solving a linear system.
+
+For a general LP with $m$ constraints, each Newton step costs $O(m^3)$ or $O(m^\omega)$ using fast matrix multiplication, giving $O(m^{3.5})$ overall (times precision factors).
+
+::: {.callout-note title="Faster via Laplacian solvers"}
+The linear systems arising from flow LPs have special structure: they are *Laplacian systems*.  Daitch and Spielman (2008) showed these can be solved in $\tilde{O}(m)$ time, yielding an $\tilde{O}(m^{3/2})$ interior-point algorithm for max flow.  Lee and Sidford (2014) further improved the interior-point iteration count from $O(\sqrt{m})$ to $O(\sqrt{n})$ by reweighting the log-barrier, giving $\tilde{O}(m\sqrt{n})$ for max flow.
+:::
+
+
+## The Ford–Fulkerson method {#sec-ford-fulkerson}
+
+### Residual graphs
+
+Given a flow $f$ in $G$, the **residual graph** $G_f$ is defined on the same vertex set with modified capacities:
+
+$$
+c_f(u,v) = c(u,v) - f(u,v) + f(v,u)
+$$ {#eq-residual}
+
+The first term is the *leftover* capacity on edge $(u,v)$.  The second term accounts for the possibility of *cancelling* flow on the reverse edge.
+
+Convention: for every edge $(u,v) \in E$, include both $(u,v)$ and $(v,u)$ in the edge set (adding a zero-capacity reverse edge if it does not already exist).  Among any edge and its reverse, at most one carries positive flow—if both did, subtract the smaller from both without changing any constraint.  This at most doubles the edge count, which only changes big-$O$ bounds by a constant.
+
+**Worked example.**  Suppose we have four vertices $\{s, a, b, t\}$ with edges $s \to a$ (capacity 7), $a \to b$ (capacity 5), $b \to t$ (capacity 2), plus edges $s \to b$ (capacity 3) and $a \to t$ (capacity 4).  Push 2 units of flow along $s \to a \to b \to t$.  The residual graph has:
+
+- $c_f(s,a) = 7 - 2 = 5$, and reverse $c_f(a,s) = 0 + 2 = 2$.
+- $c_f(a,b) = 5 - 2 = 3$, and reverse $c_f(b,a) = 0 + 2 = 2$.
+- $c_f(b,t) = 2 - 2 = 0$ (saturated), and reverse $c_f(t,b) = 0 + 2 = 2$.
+- Edges $s \to b$ and $a \to t$ are unchanged (no flow on them).
+
+The reverse edges (capacity 2) represent the option to *cancel* flow we already pushed.  Augmenting along a path that uses a reverse edge effectively reroutes existing flow.
+
+<!-- TikZ: side-by-side: left panel shows the original graph with flow f=2 on path s→a→b→t (highlighted edges); right panel shows G_f with forward residual capacities and new reverse edges labeled with their capacities -->
+
+### The algorithm
+
+Ford and Fulkerson (1956) proposed:
+
+1. Initialise $f = 0$, so $G_f = G$.
+2. **While** there exists an $s$-$t$ path in $G_f$:
+    a. Find such a path $P$ (e.g., by DFS).
+    b. Let $\lambda = \min_{e \in P} c_f(e)$ (the bottleneck capacity).
+    c. Augment: add $\lambda$ units of flow along $P$.
+    d. Update $G_f$.
+3. Output $f$.
+
+Finding a path takes $O(m)$ time (DFS or BFS).  Each augmentation pushes at least 1 unit of flow (assuming integer capacities), so the algorithm terminates in at most $f^*$ iterations, where $f^* = \text{val}(f^*)$ is the max flow value.
+
+$$
+\text{Running time:} \quad O(m \cdot f^*)
+$$ {#eq-ff-time}
+
+::: {.callout-warning}
+The $O(m \cdot f^*)$ bound is **pseudo-polynomial**: $f^*$ can be exponential in the input size.  The max flow can be as large as $n \cdot U$ where $U$ is the largest capacity, but writing $U$ in binary takes only $\log U$ bits.  A graph with two vertices and one edge of capacity $10^9$ takes a few bytes to describe, but Ford–Fulkerson could need a billion iterations.  On unit-capacity graphs, $f^* \leq n$, so the bound becomes a more reasonable $O(mn)$.
+:::
+
+::: {.callout-tip}
+The choice of *which* augmenting path to use matters.  DFS (depth-first search) can lead to the worst case.  BFS (breadth-first search) always finds a *shortest* augmenting path and yields the Edmonds–Karp bound of $O(m^2 n)$.  Lecture 21 explores this direction via *blocking flows*.
+:::
+
+### Correctness: the max-flow min-cut theorem
+
+Ford–Fulkerson terminates when $s$ and $t$ are disconnected in $G_f$ (no augmenting path exists).
+
+**Theorem (Ford and Fulkerson, 1956).**  $f$ is a max flow if and only if $G_f$ has no $s$-$t$ path.
+
+Equivalently, the maximum flow value equals the minimum $s$-$t$ cut capacity.  The proof appears in any introductory algorithms textbook (e.g., CLRS Chapter 26); the key idea is that the set of vertices reachable from $s$ in $G_f$ defines a minimum cut.
+
+::: {.callout-tip}
+The max-flow min-cut theorem is the LP duality theorem applied to @eq-flow-lp.  The dual variables correspond to the cut: each vertex is assigned to the $s$-side or the $t$-side, and the cut capacity equals the total capacity of edges crossing from $s$-side to $t$-side.
+:::
+
+
+## Cheat sheet
+
+::: {.callout-important title="Lecture 20 — cheat sheet"}
+
+**MW for LP feasibility**
+
+| Component | Detail |
+|-----------|--------|
+| Experts | The $m$ constraints of $Ax \geq b$ |
+| Day-$t$ cost | $m_t = \frac{1}{\gamma}(Ax_t - b)$ after querying oracle with $p_t$ |
+| Oracle | Solves single-constraint sub-problem $p^\top Ax \geq p^\top b$, $x \in P$ |
+| $\gamma$ | Max row-wise violation $\|a_i \cdot x - b_i\|$ across all $i$ |
+| Iterations | $T = O(\gamma^2 \ln m / \varepsilon^2)$ |
+| Output | $\tilde{x} = \frac{1}{T}\sum_t x_t$; satisfies $a_i \tilde{x} \geq b_i - \varepsilon$ for all $i$ |
+
+**Set cover oracle:** pick the set $s^*$ with largest $p(s)$; place $x_{s^*} = \beta$.  Gives $\gamma \leq m$, so $T = O(m^2 \log m / \varepsilon^2)$.
+
+**Network flow definitions**
+
+| Term | Meaning |
+|------|---------|
+| Flow $f$ | Non-negative edge vector obeying conservation and capacity |
+| $\text{val}(f)$ | Net flow leaving $s$ |
+| Residual graph $G_f$ | $c_f(u,v) = c(u,v) - f(u,v) + f(v,u)$ |
+| Augmenting path | $s$-$t$ path in $G_f$ |
+| Ford–Fulkerson | Repeatedly augment along any $s$-$t$ path; $O(m \cdot f^*)$ time |
+| Max-flow min-cut | $\max \text{val}(f) = \min_{S \text{ cut}} c(S, \bar{S})$ |
+
+:::
+
+
+## FAQ — questions students actually asked
+
+**Q: Does the MW–LP theorem require the constraint matrix $A$ to have non-negative entries (packing/covering)?**
+
+No.  The proof never uses non-negativity of $A$.  The original Plotkin–Shmoys–Tardos paper focused on packing and covering LPs, but the oracle-based framework works for general LPs.  Non-negativity can *help* in designing a good oracle (small $\gamma$), but it is not required by the theorem.
+
+**Q: The oracle returns an $x$ with $|a_i \cdot x - b_i| \leq \gamma$.  That means $x$ might violate the *original* constraints.  How is that useful?**
+
+The absolute value means the oracle's $x_t$ can violate individual constraints by up to $\gamma$ in either direction.  The magic is in the *averaging*: multiplicative weights ensures that the *average* $\tilde{x}$ violates constraints by at most $\varepsilon$, much less than $\gamma$.  The $\gamma$ only affects the *number of iterations* needed.
+
+**Q: What's the difference between $P$ (capital) and $p$ (lowercase) in the LP framework?**
+
+$P$ (capital) is the convex feasibility set (e.g., $\{x \geq 0 : \sum x_s \leq \beta\}$).  $p$ (lowercase) is the probability vector over experts (constraints) produced by multiplicative weights in each round.  They serve completely different roles.
+
+**Q: For the flow problem, can both $(u,v)$ and $(v,u)$ carry positive flow simultaneously?**
+
+You can always assume at most one direction carries positive flow.  If $f(u,v) = 5$ and $f(v,u) = 3$, replace with $f(u,v) = 2$, $f(v,u) = 0$.  The conservation and capacity constraints still hold, and the flow value is unchanged.
+
+**Q: Why not just solve max flow with interior point?**
+
+You can.  Generic interior point gives $O(m^{3.5})$.  Exploiting Laplacian structure brings it down to $\tilde{O}(m^{3/2})$ (Daitch–Spielman) or $\tilde{O}(m\sqrt{n})$ (Lee–Sidford).  Combinatorial algorithms like Ford–Fulkerson are important because they (a) reveal structural insights (augmenting paths, cuts) and (b) lead to strongly polynomial algorithms that don't depend on capacities at all.
+
+
+## Further reading
+
+- **Arora, Hazan, Kale.** "The multiplicative weights update method: a meta-algorithm and applications." *Theory of Computing*, 8(1):121–164, 2012.  The definitive survey unifying MW across learning, optimization, and game theory. <!-- TODO: verify exact volume/year -->
+- **Plotkin, Shmoys, Tardos.** "Fast approximation algorithms for fractional packing and covering problems." *Mathematics of Operations Research*, 20(2):257–301, 1995.  The original MW-for-LPs paper, focused on packing/covering.
+- **Ford, Fulkerson.** "Maximal flow through a network." *Canadian Journal of Mathematics*, 8:399–404, 1956.  The founding paper of network flow theory.
+- **Daitch, Spielman.** "Faster approximate lossy generalized flow via interior point algorithms." *STOC 2008*.  Laplacian solvers meet interior point for $\tilde{O}(m^{3/2})$ flow.
+- **Lee, Sidford.** "Path finding methods for linear programming: solving linear programs in $\tilde{O}(\sqrt{\text{rank}})$ iterations and faster algorithms for maximum flow." *FOCS 2014*.  The $\tilde{O}(m\sqrt{n})$ max flow result via reweighted barriers.
+
+
+## Try it yourself
+
+1. **Warm-up.**  Verify that setting $\eta = \sqrt{(\ln m)/T}$ in the MW bound gives average regret $O(\sqrt{(\ln m)/T})$.  At what $T$ does the average regret drop below $0.01$ for $m = 100$ constraints?
+
+2. **Set cover oracle.**  Write a function that, given a probability vector $p$ over elements and a list of sets, returns the oracle's output $x = \beta \cdot e_{s^*}$ and the resulting $\gamma$.
+
+```python
+def set_cover_oracle(p, sets, beta):
+    """Return (x, gamma) for the MW set cover oracle.
+
+    Parameters
+    ----------
+    p : array of shape (n,), probability over elements
+    sets : list of lists, sets[j] contains element indices in set j
+    beta : float, budget parameter
+
+    Returns
+    -------
+    x : array of shape (m,), oracle's fractional solution
+    gamma : float, max row-wise violation
+    """
+    import numpy as np
+    m = len(sets)
+    ps = np.array([p[s].sum() for s in sets])  # p(s) for each set
+    s_star = np.argmax(ps)
+    if beta * ps[s_star] < 1.0:
+        raise ValueError("Sub-problem infeasible")
+    x = np.zeros(m)
+    x[s_star] = beta
+    gamma = max(1.0, beta - 1.0)
+    return x, gamma
+```
+
+3. **Residual graph.**  Given the graph $s \to a$, $s \to b$, $a \to b$, $a \to t$, $b \to t$ with capacities $(10, 5, 3, 8, 7)$ and a flow of 3 along $s \to a \to b \to t$, draw the residual graph $G_f$ and compute all residual capacities.
+
+4. **Ford–Fulkerson by hand.**  Run Ford–Fulkerson on the graph from exercise 3.  Find augmenting paths until no more exist.  What is the max flow?  Identify the min cut.
+
+5. **Scaling thought experiment.**  Construct a graph with $n = 4$ vertices where Ford–Fulkerson with adversarial DFS path choices takes $\Omega(f^*)$ iterations.  (*Hint:* use a "diamond" graph with one low-capacity edge in the middle.)

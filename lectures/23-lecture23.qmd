@@ -1,0 +1,364 @@
+---
+title: "Link-Cut Tree Analysis and Min-Cost Max Flow"
+subtitle: "COMPSCI 224 Lecture 23 — Fall 2014"
+author: "Companion notes by Kun Deng"
+date: today
+abstract: |
+  The amortised cost of link-cut tree operations is $O(\log^2 n)$ via a
+  heavy-light decomposition argument that bounds preferred-child changes.
+  With a tighter analysis using splay tree potentials, the bound improves to
+  $O(\log n)$.  The lecture then pivots to min-cost max flow: every edge
+  carries both a capacity and a cost, and the goal is to find a max flow of
+  minimum total cost.  The key structural result—optimality is equivalent to
+  the absence of negative-cost residual cycles—yields a negative-cycle
+  cancelling algorithm and, for unit-capacity graphs with non-negative costs,
+  a faster shortest-augmenting-path algorithm running in
+  $O(mn + n^2 \log n)$.
+---
+
+## Why this lecture matters
+
+Lecture 22 built the link-cut tree data structure; this lecture proves it works fast.  The heavy-light decomposition that drives the proof is itself a widely reused analysis technique—it appears in competitive programming, in Euler-tour trees, and in the analysis of centroid decomposition.  The second half introduces min-cost max flow, the natural generalisation of max flow that handles economics: shipping goods through a network where each route has a per-unit price.  The optimality characterisation via residual-graph prices is the foundation of every practical min-cost flow solver.
+
+::: {.callout-tip title="30-second story"}
+1. The runtime of `access(v)` is proportional to the number of preferred-child changes along the root-to-$v$ path.
+2. Heavy-light decomposition classifies each edge as heavy or light; any root-to-leaf path has at most $\log n$ light edges.
+3. Total preferred-child changes across $m$ operations is $O(m \log n)$, giving $O(m \log^2 n)$ with balanced BSTs or $O(m \log n)$ with splay trees.
+4. Min-cost max flow asks for a maximum flow minimising $\sum_e f(e)\,c(e)$; it reduces to min-cost circulation and vice versa.
+5. A circulation is optimal iff the residual graph has no negative-cost cycle, iff there exists a price function making all reduced costs non-negative.
+6. For unit-capacity, non-negative-cost graphs, repeatedly augmenting along shortest $s$-$t$ paths (Dijkstra) solves min-cost max flow in $O(mn + n^2 \log n)$.
+:::
+
+## Amortised analysis of link-cut trees {#sec-lct-analysis}
+
+### Runtime in terms of preferred-child changes
+
+Recall from Lecture 22 that `access(v)` repeatedly splays and splices upward.  Each splice corresponds to one preferred-child change (PCC): some vertex $w$ along the root-to-$v$ path switches its preferred child.
+
+Let $\text{PCC}_i$ be the number of preferred-child changes in the $i$-th operation.  Then:
+
+$$
+\text{total time for } m \text{ operations} \;=\; O\!\left(\text{(cost per splay)} \times m \;+\; \sum_{i=1}^{m} \text{PCC}_i\right)
+$$ {#eq-runtime-pcc}
+
+With balanced BSTs, each splay costs $O(\log n)$ worst case.  With actual splay trees, the amortised cost per splay is $O(\log n)$, but the crucial insight is that the splay cost can be folded into the PCC bound—see the problem set for the $O(\log n)$ amortised proof.
+
+::: {.callout-note title="Two levels of amortisation"}
+The $O(\log^2 n)$ bound uses worst-case $O(\log n)$ per splay × $O(\log n)$ preferred-child changes per operation.  The sharper $O(\log n)$ bound replaces the first factor with an amortised argument using the splay tree's access lemma and a carefully chosen weight function.
+:::
+
+## Heavy-light decomposition {#sec-heavy-light}
+
+This decomposition is purely an analysis tool—the data structure does not maintain it.
+
+### Definitions
+
+For a vertex $v$ in the represented tree, define $\text{size}(v)$ as the number of vertices in $v$'s subtree.  For a child $u$ of $v$:
+
+- The edge $u \to v$ is **heavy** if $\text{size}(u) > \tfrac{1}{2}\,\text{size}(v)$.
+- The edge $u \to v$ is **light** if $\text{size}(u) \leq \tfrac{1}{2}\,\text{size}(v)$.
+
+<!-- TikZ: A rooted tree of ~12 nodes.  Heavy edges drawn thick and solid, light edges drawn thin and dashed.  Each node annotated with its subtree size.  Caption: "Heavy-light decomposition.  Each vertex has at most one heavy child." -->
+
+::: {.callout-important}
+A vertex can have at most **one** heavy child.  Proof: if two children $u_1, u_2$ both had $\text{size}(u_i) > \tfrac{1}{2}\,\text{size}(v)$, then $\text{size}(u_1) + \text{size}(u_2) > \text{size}(v)$, contradicting the fact that both subtrees are disjoint subsets of $v$'s subtree.
+:::
+
+### Key property: few light edges on any root-to-leaf path
+
+Every time you follow a light edge downward, the subtree size at least halves.  Since the root has subtree size $n$:
+
+$$
+\text{number of light edges on any root-to-leaf path} \;\leq\; \log_2 n
+$$ {#eq-light-edges}
+
+Heavy edges impose no such bound—a root-to-leaf path could be entirely heavy.  But we only need to count *light* edges.
+
+## Bounding preferred-child changes {#sec-bounding-pcc}
+
+Each preferred-child change creates a new preferred edge and (possibly) destroys an old one.  The new edge is either heavy or light.  We track **light preferred-child creations (LPCC)** separately.
+
+### The decomposition
+
+$$
+\text{PCC} \;\leq\; 2 \cdot \text{LPCC} + m + n
+$$ {#eq-pcc-decomposition}
+
+**Why?**  Consider a preferred-child change at vertex $v$: child $u$ was preferred, now child $w$ is preferred.
+
+- If the new edge $w \to v$ is **light**: counted directly as an LPCC.
+- If the new edge $w \to v$ is **heavy** and $u$ was null (no previous preferred child): either this is the first access in $v$'s subtree (at most $n$ such events total) or the last access in $v$'s subtree was to $v$ itself.  In the latter case, charge this to that prior access—each access is charged at most once, contributing at most $m$.
+- If the new edge $w \to v$ is **heavy** and $u$ was not null: since $v$ can have at most one heavy child, $u \to v$ must have been *light*.  That light preferred edge was created at some earlier time; charge this heavy creation to that earlier light creation.  This at most doubles the LPCC count.
+
+::: {.callout-tip title="Charging argument intuition"}
+Heavy preferred-child creations are either free (first access) or can be blamed on an earlier light creation.  So the total PCC is at most twice the light creations plus bookkeeping.
+:::
+
+### LPCC across the three operations
+
+**Access.** Does not change the represented tree, so what's heavy/light is fixed.  Walking from $v$ to the root, we change preferred children along the path.  The number of light edges on this path is at most $\log n$ by @eq-light-edges.  So:
+
+$$
+\text{LPCC per access} \;\leq\; \log n
+$$
+
+**Link($v$, $w$).** First does `access(v)` and `access(w)` (already counted).  Then adds the edge $v \to w$, which changes subtree sizes: vertices along the path from $w$ to the root get heavier.  Some off-path edges that were heavy may become light, but those are not preferred, so they don't create LPCCs.  The new preferred edges along the $w$-to-$v$ path may include light ones, but these were already created by the preceding `access(w)`.  Net new LPCCs beyond the two accesses: zero.
+
+**Cut($v$).** First does `access(v)`.  Then removes the edge from $v$ to its parent, decreasing subtree sizes along the path above.  Edges along the old root-to-$v$ preferred path may become lighter.  The number of edges that flip from heavy to light (and are preferred) is at most $\log n$, since it's a root-to-leaf path.
+
+### Totalling up
+
+$$
+\text{total LPCC across } m \text{ operations} \;=\; O(m \log n)
+$$
+
+Plugging into @eq-pcc-decomposition:
+
+$$
+\text{total PCC} \;=\; O(m \log n + m + n) \;=\; O(m \log n)
+$$
+
+(assuming $m \geq n$, which holds in the blocking-flow application since $m$ is the number of edges).
+
+## The $O(m \log^2 n)$ bound {#sec-log-squared}
+
+Each operation triggers $O(\log n)$ preferred-child changes (from the PCC bound).  Each PCC involves a splay in an auxiliary tree of size at most $n$, costing $O(\log n)$ worst-case with balanced BSTs.
+
+$$
+m \text{ operations cost } O(m \log^2 n)
+$$ {#eq-log-squared}
+
+::: {.callout-note title="Aside (mine, not the lecturer's)"}
+For the blocking-flow application with $m$ edges and $n$ phases, the total max-flow time becomes $O(mn \log^2 n)$ with balanced BSTs and $O(mn \log n)$ with splay trees.  The improvement from $\log^2 n$ to $\log n$ is on the problem set: define vertex weights as subtree sizes, plug into the splay access lemma's potential function, and the splay costs telescope with the PCC costs.
+:::
+
+## Augmented BSTs for path operations {#sec-augmented-bsts}
+
+A student asked how `subtract` and `find_min` are actually implemented inside the auxiliary trees.  The answer is **BST augmentation**: each node stores aggregate information about its subtree.
+
+For `find_min`: each node stores the minimum edge capacity in its subtree.  After `access(v)`, the root's augmented value gives the minimum on the entire $v$-to-root path.
+
+For `subtract(v, x)`: use **lazy propagation**.  Store a pending subtraction tag at the root; push it down during splays.  This is the same technique used in segment trees and is standard for splay tree augmentations.
+
+The key-value analogy: think of the auxiliary tree as storing items keyed by depth, with values being edge capacities.  Operations like "sum of values with key $\leq k$" or "min of all values" are standard augmented-BST queries.
+
+## Min-cost max flow {#sec-mcmf}
+
+### Problem definition
+
+Each edge $e$ now has two attributes:
+
+- **Capacity** $u(e) \in \{1, 2, \ldots, U\}$
+- **Cost** $c(e) \in \{-C, \ldots, C\}$ (possibly negative)
+
+The **cost** of a flow $f$ is:
+
+$$
+\text{cost}(f) = \sum_{e} f(e) \cdot c(e)
+$$ {#eq-flow-cost}
+
+**Goal:** among all maximum $s$-$t$ flows, find one minimising $\text{cost}(f)$.
+
+::: {.callout-warning title="Residual costs"}
+In the residual graph, the reverse of edge $e$ has cost $-c(e)$.  Pushing flow back along $e$ recovers the cost you paid.  This is analogous to how the residual capacity represents "undoing" flow.
+:::
+
+### Min-cost circulation
+
+A **circulation** is a flow with no source or sink: $\text{inflow}(v) = \text{outflow}(v)$ for all $v$.  A min-cost circulation (MCC) minimises $\sum_e f(e)\,c(e)$ subject to capacity constraints.
+
+::: {.callout-important}
+Min-cost max flow and min-cost circulation **efficiently reduce to each other**.
+:::
+
+**MCC → min-cost max flow:** Add a disconnected source $s$ and sink $t$ (no edges to the rest of the graph).  The max flow is 0, and any $s$-$t$ flow is a circulation.  Calling the min-cost max flow algorithm finds the min-cost circulation.
+
+**Min-cost max flow → MCC (two approaches):**
+
+1. **Negative-cost trick:** Add a $t \to s$ edge with very negative cost and infinite capacity.  The MCC algorithm will saturate this edge as much as possible—which means pushing maximum flow from $s$ to $t$—because doing so decreases cost.
+
+2. **Residual approach:** Find *any* max flow $f$ (ignoring costs).  Then find a min-cost circulation $f^*$ in the residual graph $G_f$.  The flow $f + f^*$ is a min-cost max flow.  This works because the difference of any two flows of the same value is a circulation.
+
+## Negative-cycle cancelling {#sec-negative-cycle}
+
+### The algorithm
+
+```python
+# Min-cost circulation via negative-cycle cancelling
+f = zero circulation
+while residual graph G_f contains a negative-cost cycle C:
+    augment f along C   # push flow around C up to bottleneck capacity
+```
+
+### Correctness
+
+Suppose the current circulation $f$ is suboptimal and the optimal circulation is $f^*$.  Then $f^* - f$ is a negative-cost circulation feasible in the residual graph $G_f$.  Any circulation decomposes into at most $m$ cycles (repeatedly extract a cycle by following positive-flow edges).  Since the total cost is negative, at least one cycle must be negative.  The algorithm will find and augment along it.
+
+::: {.callout-tip title="Cycle decomposition"}
+To decompose a circulation into cycles: pick any edge with positive flow, follow outgoing edges until you revisit a vertex (guaranteed since it's a circulation), extract the cycle with the minimum flow on it, subtract, repeat.  Each step removes at least one edge, so at most $m$ cycles are extracted.
+:::
+
+### Detecting negative cycles
+
+**Bellman–Ford** finds negative cycles in $O(mn)$ time.  A faster alternative due to **Goldberg (1995)** runs in $O(m\sqrt{n}\,\log C)$ using a scaling approach.
+
+### Runtime: pseudo-polynomial
+
+Each augmentation decreases cost by at least 1 (integer costs).  The initial cost is at most $mUC$ in absolute value.  So the number of iterations is $O(mUC)$, giving total time $O(m^2 n U C)$ with Bellman–Ford—pseudo-polynomial, analogous to Ford–Fulkerson for basic max flow.
+
+## Price functions and reduced costs {#sec-prices}
+
+### Definition
+
+A **price function** $p : V \to \mathbb{R}$ induces **reduced costs**:
+
+$$
+c_p(u, v) = c(u, v) + p(u) - p(v)
+$$ {#eq-reduced-cost}
+
+<!-- TikZ: a directed edge from u to v.  Label the edge c(u,v).  Label u with p(u) and v with p(v).  Below, show the reduced cost formula.  Caption: "Reduced cost = shipping cost + buying price at source − selling price at destination." -->
+
+::: {.callout-tip title="The gold-trading analogy"}
+Imagine buying gold at vertex $u$ (pay $p(u)$), shipping it along edge $(u,v)$ (pay $c(u,v)$), and selling at $v$ (earn $p(v)$).  The reduced cost $c_p(u,v)$ is your net expense.  If it's negative, the trade is profitable.
+:::
+
+### Key property: cycle costs are invariant
+
+For any cycle, the prices cancel:
+
+$$
+\sum_{(u,v) \in \text{cycle}} c_p(u,v) = \sum_{(u,v) \in \text{cycle}} c(u,v)
+$$
+
+This is because each vertex appears exactly once as a head and once as a tail, so the $p(u)$ and $p(v)$ terms telescope.
+
+### Optimality characterisation
+
+::: {.callout-important}
+A circulation $f$ is optimal (min-cost) **if and only if** there exists a price function $p$ such that all reduced costs in the residual graph $G_f$ are non-negative.
+:::
+
+**Forward direction ($\Leftarrow$):** If all reduced costs are non-negative, every cycle in $G_f$ has non-negative reduced cost, hence non-negative original cost (by the invariance above).  No negative-cost cycle exists, so $f$ is optimal.
+
+**Reverse direction ($\Rightarrow$):** If $G_f$ has no negative cycles, add a dummy vertex $s$ with zero-cost edges to all vertices.  Define $p(v) = \text{dist}(s, v)$ under the cost function (well-defined since no negative cycles).  The triangle inequality gives $c_p(u,v) \geq 0$ for every residual edge.
+
+## Faster min-cost flow for unit capacities {#sec-unit-capacity}
+
+### Setup
+
+Assume all edge capacities are 1 and all edge costs are non-negative (we handle the general case via a reduction sketched below).
+
+### The algorithm
+
+```python
+# Min-cost max flow for unit-capacity, non-negative cost graphs
+f = zero flow
+while there exists an s-t path in residual graph G_f:
+    P = shortest s-t path in G_f (by cost, using Dijkstra)
+    augment f along P
+```
+
+### Why Dijkstra stays valid
+
+The critical question: augmenting introduces reverse edges with cost $-c(e)$.  Why don't we get negative edges?
+
+Set prices $p(v) = \text{dist}(s, v)$ in the current residual graph (shortest-path distances under costs).  Every edge $(u,v)$ on a shortest path satisfies:
+
+$$
+\text{dist}(s, v) = \text{dist}(s, u) + c(u,v)
+$$
+
+which means its reduced cost $c_p(u,v) = 0$.  When we augment along this path in a unit-capacity graph, each edge is fully saturated, removed from the residual graph, and replaced by its reverse.  The reverse edge has reduced cost $-c_p(u,v) = 0$.
+
+So every new edge added to the residual graph has reduced cost zero—never negative.  Dijkstra remains valid in every iteration.
+
+::: {.callout-note title="Aside (mine, not the lecturer's)"}
+After each augmentation, update prices as $p'(v) = p(v) + \text{dist}_p(s, v)$ where $\text{dist}_p$ uses reduced costs.  This is *Johnson's reweighting* applied dynamically.  It keeps all reduced costs non-negative across iterations without re-running Bellman–Ford.
+:::
+
+### Runtime
+
+- **Iterations:** at most $n$ (each augmenting path in a unit-capacity graph carries one unit of flow; max flow value $\leq n$).
+- **Per iteration:** Dijkstra with Fibonacci heaps costs $O(m + n \log n)$.
+- **Total:** $O(mn + n^2 \log n)$.
+
+### Handling negative costs or general capacities
+
+If the original graph has negative-cost edges:
+
+1. Find any max flow $f$ (ignoring costs).
+2. In the residual graph, saturate every negative-cost edge to eliminate it.  This creates excess/deficit at some vertices.
+3. Add a super-source $s'$ connected to deficit vertices and a super-sink $t'$ connected to excess vertices, with capacities matching the imbalances.
+4. Solve min-cost max flow on this modified graph—which now has all non-negative costs.
+
+For general (non-unit) capacities, a **capacity-scaling** technique (see Problem Set 8) introduces a $\log U$ factor.
+
+## Cheat sheet
+
+::: {.callout-important title="Cheat sheet — LCT Analysis & Min-Cost Max Flow"}
+
+**Link-cut tree analysis:**
+
+- Each edge in the represented tree is heavy (child size $> n/2$) or light ($\leq n/2$)
+- At most one heavy child per vertex; at most $\log n$ light edges on any root-to-leaf path
+- Total preferred-child changes across $m$ ops: $O(m \log n)$
+- With balanced BSTs: $O(m \log^2 n)$ total; with splay trees: $O(m \log n)$
+
+**Min-cost max flow:**
+
+- Each edge has capacity $u(e)$ and cost $c(e)$; goal: max flow minimising $\sum f(e)\,c(e)$
+- Reverse edges in residual graph have cost $-c(e)$
+- Equivalent to min-cost circulation (reductions in both directions)
+- Optimal iff no negative-cost cycle in residual graph
+- Optimal iff $\exists$ price function $p$ with all reduced costs $c_p(u,v) = c(u,v) + p(u) - p(v) \geq 0$
+
+**Algorithms:**
+
+| Algorithm | Setting | Time |
+|-----------|---------|------|
+| Negative-cycle cancelling | General | $O(m^2 n U C)$ — pseudo-polynomial |
+| Shortest augmenting path (Dijkstra) | Unit capacity, $c \geq 0$ | $O(mn + n^2 \log n)$ |
+| + capacity scaling | General capacities | adds $O(\log U)$ factor |
+| Bellman–Ford (negative-cycle finding) | General | $O(mn)$ per iteration |
+| Goldberg scaling | General | $O(m\sqrt{n}\log C)$ per iteration |
+:::
+
+## FAQ — questions students actually asked {#sec-faq}
+
+**Q: Why is there an $m$ multiplying the splay cost in the runtime formula?**
+The formula sums over all $m$ operations.  Each operation does at least one splay (the initial `access`), contributing $O(\log n)$.  That baseline cost is $O(m \log n)$.  On top of that, each preferred-child change triggers an additional splay, and the total PCCs add $O(m \log n)$ more.
+
+**Q: Can a vertex have two heavy children?**
+No.  If child $u$ has $\text{size}(u) > \frac{1}{2}\text{size}(v)$, then $u$'s subtree contains more than half of $v$'s descendants.  Two such children would account for more than all of $v$'s descendants—a contradiction.
+
+**Q: In the link analysis, why don't the new preferred edges along the path from $w$ to $v$ cost extra LPCCs?**
+Those preferred edges were created by `access(w)`, which is already counted separately.  The final step of link—adding the actual edge—changes subtree sizes but doesn't create new preferred edges.
+
+**Q: For min-cost circulation, what if the graph has negative-cost edges initially?  Won't the algorithm diverge?**
+No.  Negative-cost *edges* are fine—the issue is negative-cost *cycles*.  Negative-cycle cancelling terminates because each augmentation strictly decreases total cost, and costs are bounded below.  If you want to avoid Bellman–Ford, the reduction to non-negative costs (saturate negative edges, fix excess/deficit with a super-source/sink) converts the problem to one solvable by Dijkstra.
+
+**Q: In the unit-capacity shortest-path algorithm, why are there at most $n$ iterations?**
+Each augmentation sends one unit of flow (unit capacity, so the bottleneck is always 1).  The maximum flow value is at most $n - 1$ (at most $n - 1$ edge-disjoint $s$-$t$ paths in a graph with $n$ vertices).
+
+**Q: Why does the difference of two max flows of the same value form a circulation?**
+Both flows satisfy flow conservation at every vertex (inflow = outflow + excess, with the same excess at $s$ and $t$).  Subtracting: the differences satisfy conservation with zero excess everywhere—that's a circulation.
+
+## Further reading {#sec-further-reading}
+
+- **Sleator and Tarjan**, "A data structure for dynamic trees," *J. Comput. System Sci.* 26(3):362–391, 1983.  Proves the $O(\log n)$ amortised bound for link-cut trees.
+- **Goldberg and Tarjan**, "Finding minimum-cost circulations by canceling negative cycles," *J. ACM* 36(4):873–886, 1989.  Formalises the negative-cycle cancelling algorithm and proves polynomial bounds with careful cycle selection.
+- **Goldberg**, "Scaling algorithms for the shortest paths problem," *SIAM J. Comput.* 24(3):494–504, 1995.  The $O(m\sqrt{n}\log C)$ algorithm for shortest paths with negative weights.
+- **Orlin**, "A faster strongly polynomial minimum cost flow algorithm," *Oper. Res.* 41(2):338–350, 1993.  Strongly polynomial min-cost flow in $O(m \log n (m + n \log n))$.
+- **Ahuja, Magnanti, and Orlin**, *Network Flows: Theory, Algorithms, and Applications*, Prentice Hall, 1993.  The standard reference for all things network flow, including min-cost flow.
+
+## Try it yourself {#sec-exercises}
+
+1. **Heavy-light by hand.**  Draw a rooted tree on 10 vertices.  Label each vertex with its subtree size.  Classify every edge as heavy or light.  Verify that every root-to-leaf path has at most $\lfloor \log_2 10 \rfloor = 3$ light edges.
+
+2. **PCC accounting.**  Consider a path graph $v_1 - v_2 - \cdots - v_8$ rooted at $v_1$.  Perform the following access sequence: $v_8, v_4, v_6, v_2, v_7$.  For each access, list the preferred-child changes and classify each new preferred edge as heavy or light.  Verify that your total LPCC count is consistent with the $O(\log n)$ per-access bound.
+
+3. **Reduced costs and Dijkstra.**  Given a directed graph with costs $c(u,v)$ and a price function $p$, prove that Dijkstra's algorithm on reduced costs $c_p$ finds the same shortest paths as on $c$.  Then show that after augmenting along a shortest path and updating prices as $p'(v) = p(v) + \text{dist}_p(s,v)$, all reduced costs remain non-negative.
+
+4. **Negative-cycle cancelling.**  Consider a graph with 4 vertices $\{s, a, b, t\}$, edges $s \to a$ (cap 3, cost 1), $s \to b$ (cap 2, cost 4), $a \to b$ (cap 2, cost 2), $a \to t$ (cap 2, cost 3), $b \to t$ (cap 3, cost 1).  Find the min-cost max flow by first computing any max flow, then cancelling negative cycles in the residual graph.
+
+5. **Coding challenge.**  Implement the successive shortest path algorithm for min-cost max flow using Dijkstra with Johnson's reweighting.  Test it on a bipartite matching instance (unit capacities, unit costs on matching edges, zero costs on source/sink edges) and verify the result is a minimum-weight perfect matching.

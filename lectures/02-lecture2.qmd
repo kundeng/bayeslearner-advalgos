@@ -1,0 +1,384 @@
+---
+title: "Fusion Trees"
+subtitle: "COMPSCI 224 Lecture 2 — Fall 2014"
+author: "Companion notes by Kun Deng"
+date: today
+abstract: |
+  Fusion trees achieve $O(\log_w n)$ predecessor query time using $O(n)$ space
+  by packing $w^{1/5}$ keys per node and searching each node in $O(1)$ via
+  three Word-RAM techniques: sketch compression (reducing key width through
+  multiplication), word-level parallelism (comparing against all keys
+  simultaneously via subtraction), and constant-time most-significant-bit
+  extraction.
+---
+
+## Why this lecture matters {#sec-why}
+
+Van Emde Boas trees are fast when the word size $w$ is small. Fusion trees are the complement: they shine when $w$ is large relative to $\log n$. Together they yield $O(\sqrt{\log n})$ predecessor — optimal for linear space. The real payoff of this lecture is the *toolkit*: sketch compression, parallel comparison, and MSB extraction are bit-manipulation primitives that recur throughout algorithm design.
+
+::: {.callout-tip title="The 30-second story"}
+1. A $k$-ary search tree has height $\log_k n$; set $k = w^{1/5}$ to get height $O(\log_w n)$.
+2. A node holds $k$ keys totalling $kw > w$ bits — it doesn't fit in a word. **Sketch compression** reduces each key to $O(k^4)$ bits via a carefully chosen multiplication.
+3. A query key's sketch might land in the wrong position; an XOR + **MSB** computation identifies and corrects the error.
+4. **Word-level parallelism** compares the query against all $k$ sketches simultaneously using a single subtraction.
+5. **MSB in $O(1)$** is achieved by splitting into $\sqrt{w}$ chunks, summarising non-empty chunks, and applying parallel comparison at the chunk level.
+6. Each node is processed in $O(1)$, giving total query time $O(\log_w n)$.
+:::
+
+
+## Erratum: VEB space with hashing {#sec-erratum}
+
+::: {.callout-warning title="Subtlety in the CLRS exercise"}
+The VEB-with-hash-tables space argument from Lecture 1 (and CLRS Exercise 20-1(f)) contains a subtle error. The "charge each hash entry to the minimum in that cluster" argument slightly over-counts. The correct bound is still $O(n)$ but requires a more careful argument — this was assigned as a problem set exercise.
+
+Y-fast tries, as presented, do achieve $O(n)$ space without this subtlety.
+:::
+
+
+## From binary to $k$-ary search trees {#sec-kary}
+
+### The basic structure
+
+Replace the binary branching of a BST with **$k$-ary** branching. Each internal node stores $k - 1$ sorted keys $x_0 < x_1 < \cdots < x_{k-2}$ and has $k$ children.
+
+<!-- TikZ: A single k-ary node containing keys x_0, x_1, ..., x_{k-2} with k child pointers below. One subtree is labeled "keys < x_0", the next "x_0 < keys < x_1", etc. -->
+
+With $n$ total keys, the tree height is $\lceil\log_k n\rceil$.
+
+### Choosing $k$
+
+Set $k = \Theta(w^{1/5})$. Then:
+
+$$
+\text{height} = O(\log_{w^{1/5}} n) = O\!\left(\frac{\log n}{\tfrac{1}{5}\log w}\right) = O(\log_w n)
+$$ {#eq-fusion-height}
+
+**The catch:** processing a node naively (linear scan: $O(k)$; binary search: $O(\log k)$) multiplied by the height never beats $O(\log n)$. To win, each node must be processed in $O(1)$ time.
+
+::: {.callout-important title="The core challenge"}
+A single node has $k = \Theta(w^{1/5})$ keys, each $w$ bits wide. Total node size: $\Theta(w^{6/5})$ bits — *more than a word*. How do you search it in $O(1)$?
+:::
+
+
+## Sketch compression {#sec-sketching}
+
+### Branch bits
+
+Consider the $k$ keys $x_0 < x_1 < \cdots < x_{k-1}$ in a single node. Write them as paths in a binary trie from the MSB to the LSB.
+
+<!-- TikZ: A binary trie with three paths (k=3 keys) diverging at certain internal nodes. The diverging nodes are highlighted and labeled "branch bits b_0, b_1". Non-branching edges are drawn as dashed. -->
+
+A **branch bit** is a bit position where at least two of the $k$ paths diverge. There are at most $r \leq k - 1$ branch bits at positions $b_0 < b_1 < \cdots < b_{r-1}$.
+
+**Claim:** projecting every key to just its branch-bit positions preserves order. That is, if $x_i < x_j$, then $\text{sk}(x_i) < \text{sk}(x_j)$ where $\text{sk}(x)$ extracts bits $b_0, b_1, \ldots, b_{r-1}$ from $x$.
+
+This is immediate: the first bit where $x_i$ and $x_j$ differ is, by definition, a branch bit. All earlier branch bits are identical between them, so lexicographic order is preserved.
+
+### The sketch function
+
+Define:
+
+$$
+\text{sk}(x) = (x_{b_0},\, x_{b_1},\, \ldots,\, x_{b_{r-1}})
+$$ {#eq-sketch-def}
+
+where $x_{b_i}$ denotes the $b_i$-th bit of $x$. Each sketch is $r < k = w^{1/5}$ bits. Storing all $k$ sketches takes $O(k \cdot r) = O(w^{2/5})$ bits — comfortably fits in one word.
+
+::: {.callout-caution title="Sketches can lie about query position"}
+For stored keys $x_i$, sketches preserve order. But a *query* $q \notin \{x_0, \ldots, x_{k-1}\}$ may sketch to a position that disagrees with its true rank among the $x_i$'s. We handle this next.
+:::
+
+
+## Handling arbitrary queries {#sec-query-correction}
+
+### The problem
+
+Suppose $\text{sk}(q)$ lands between $\text{sk}(x_i)$ and $\text{sk}(x_{i+1})$. This does *not* guarantee $x_i < q < x_{i+1}$. The sketch lost information at some non-branch bit where $q$ diverged from the stored keys.
+
+### The fix: find the divergence point
+
+Let $y$ be the node in the binary trie where $q$ first departs from the paths of $\{x_0, \ldots, x_{k-1}\}$. Compute this via:
+
+$$
+y = \text{MSB}(x_i \oplus q) \quad\text{and}\quad y' = \text{MSB}(x_{i+1} \oplus q)
+$$ {#eq-find-y}
+
+Take the more significant of the two — that is the first bit where $q$ leaves the trie. This tells you:
+
+- **If $q$ fell off to the right** (bit was 1 where the path went 0): form $e = y \,\|\, 0 \,\|\, 1\cdots1$. This $e$ is larger than everything in the left subtree of $y$, so its rank among the $x_i$ gives $q$'s true position.
+- **If $q$ fell off to the left** (bit was 0 where the path went 1): form $e = y \,\|\, 1 \,\|\, 0\cdots0$. This $e$ is smaller than everything in the right subtree of $y$.
+
+Since $e$ shares all branch bits with some $x_i$, we have $\text{sk}(e)$ correctly positioned among the stored sketches — and $e$'s rank equals $q$'s rank.
+
+<!-- TikZ: The binary trie with k=4 paths. A query q diverges at node y. Two cases shown side by side: q goes right (e = y||0||111) highlighted in blue; q goes left (e = y||1||000) highlighted in red. Arrows show where e and q land relative to the x_i's. -->
+
+::: {.callout-tip title="Why XOR + MSB?"}
+$x_i \oplus q$ has a 1 in every position where the two differ. The most significant such 1 is the *first* point of divergence (reading from MSB to LSB) — exactly the trie node where $q$'s path separates from $x_i$'s.
+:::
+
+
+## Sketch compression via multiplication {#sec-multiply}
+
+### The problem
+
+After masking out the $r$ branch bits from $x$, you have a $w$-bit word with only $r$ non-zero positions — potentially spread across the entire word. You need to *compress* them into a contiguous block of $O(r^4)$ bits so all $k$ compressed sketches fit in a single word.
+
+### The multiplication trick
+
+Let $X$ denote $x$ after masking (only branch-bit positions are non-zero):
+
+$$
+X = \sum_{i=0}^{r-1} x_{b_i} \cdot 2^{b_i}
+$$
+
+Choose a multiplier $M = \sum_{i=0}^{r-1} 2^{m_i}$ such that the product $X \cdot M$ places the branch bits in known, compact positions:
+
+$$
+X \cdot M = \sum_{i=0}^{r-1} \sum_{j=0}^{r-1} x_{b_i} \cdot 2^{b_i + m_j}
+$$ {#eq-product}
+
+The "diagonal" terms $b_i + m_i$ are where the $i$-th sketch bit lands. If we choose $M$ so that:
+
+1. **All sums $b_i + m_j$ are distinct** — no carries corrupt the result.
+2. **The diagonal sums are increasing:** $b_0 + m_0 < b_1 + m_1 < \cdots < b_{r-1} + m_{r-1}$.
+3. **The range is small:** $(b_{r-1} + m_{r-1}) - (b_0 + m_0) = O(r^4)$.
+
+Then after multiplying, mask out just the $r$ diagonal positions and shift right by $b_0 + m_0$. The result is an $O(r^4) = O(w^{4/5})$-bit compressed sketch.
+
+::: {.callout-note title="Computing a sketch at query time"}
+The sketch operation is: `mask → multiply by M → mask diagonal → shift`. Four $O(1)$ Word-RAM operations. $M$ and the masks are precomputed per node during construction.
+:::
+
+### Proof sketch: choosing the $m_i$
+
+**Lemma.** There exist $m_0, \ldots, m_{r-1}$ satisfying conditions (1)–(3) above.
+
+*Proof (by induction).* Work modulo $r^3$. At step $t$, having chosen $m'_0, \ldots, m'_{t-1}$ such that all $b_i + m'_j$ are distinct mod $r^3$, the new $m'_t$ must avoid $r \cdot t < r^2$ forbidden residues. Since there are $r^3$ residues available and $r^2 < r^3$ are forbidden, a valid choice exists.
+
+To get the final $m_i$: set $m_i = m'_i + i \cdot r^3 + (w - b_i)$ rounded to the nearest multiple of $r^3$. This places $b_i + m_i$ in the $i$-th block of width $r^3$, guaranteeing condition (2). The total span is $r \cdot r^3 = r^4 = O(w^{4/5})$, giving condition (3). Distinctness mod $r^3$ implies global distinctness.
+
+<!-- TikZ: A number line from 0 to r^4. Divided into r blocks of width r^3 each. In each block i, a dot marks the position b_i + m_i. Cross-terms (b_i + m_j for i≠j) are scattered elsewhere but do not collide with any diagonal term. -->
+
+
+## Word-level parallelism: parallel comparison {#sec-parallel}
+
+### The node sketch word
+
+At each fusion tree node, precompute and store a single word:
+
+$$
+\text{NODE} = 1\,\|\,\text{sk}(x_0)\,\|\,1\,\|\,\text{sk}(x_1)\,\|\,\cdots\,\|\,1\,\|\,\text{sk}(x_{k-1})
+$$ {#eq-node-word}
+
+Each sketch block is padded to a fixed width (say $r^4$ bits), with a leading 1-bit sentinel.
+
+### Query comparison
+
+Given query $q$, form the **replicated sketch**:
+
+$$
+\text{QUERY} = 0\,\|\,\text{sk}(q)\,\|\,0\,\|\,\text{sk}(q)\,\|\,\cdots\,\|\,0\,\|\,\text{sk}(q)
+$$
+
+This is computed by sketching $q$ once and multiplying by a word of the form $1\underbrace{00\cdots0}_{r^4}1\underbrace{00\cdots0}_{r^4}\cdots$.
+
+Now compute:
+
+$$
+D = \text{NODE} - \text{QUERY}
+$$ {#eq-parallel-subtract}
+
+In each block, the sentinel 1 in NODE prevents borrows from propagating between blocks. The sentinel bit of block $i$ in $D$ is:
+
+- **1** if $\text{sk}(x_i) \geq \text{sk}(q)$ (no borrow consumed the sentinel)
+- **0** if $\text{sk}(x_i) < \text{sk}(q)$ (borrow consumed the sentinel)
+
+Mask out all non-sentinel bits. The result is a **monotone** bitstring: some leading 0's (keys smaller than $q$) followed by 1's (keys $\geq q$). The number of 1's — equivalently, the position of the first 1 — tells you where $q$ ranks.
+
+### Counting the 1's via multiplication
+
+The sentinel bits are spaced at regular intervals. Multiply the masked result by a word with 1's at matching intervals — all sentinel bits accumulate into a single $\lceil\log k\rceil$-bit counter at a known position. Extract with a final mask and shift.
+
+::: {.callout-important title="Total cost per node: $O(1)$"}
+Sketch $q$ (4 ops) → replicate (1 multiply) → subtract (1 op) → mask sentinels (1 op) → count via multiply (1 op) → extract (mask + shift). Constant operations total.
+:::
+
+
+## Most significant bit in $O(1)$ {#sec-msb}
+
+### Why we need it
+
+The query-correction step (@sec-query-correction) requires $\text{MSB}(x_i \oplus q)$. We cannot call ourselves recursively (that would be circular). Instead, we build MSB from the same primitives: splitting, parallel comparison, and multiplication.
+
+### Algorithm
+
+Given a $w$-bit word $x$, find the index of its most significant 1-bit.
+
+**Step 1: Split into $\sqrt{w}$ chunks of $\sqrt{w}$ bits each.**
+
+```
+x = [chunk_0 | chunk_1 | ... | chunk_{√w - 1}]
+```
+
+**Step 2: Determine which chunks are non-zero.**
+
+Let $F$ be a word with a 1 at the leading position of each chunk and 0's elsewhere.
+
+1. Compute $A = x \mathbin{\&} F$ — this captures the leading bit of each chunk.
+2. Clear those leading bits: $B = x \oplus A$.
+3. Compute $C = F - B$ — within each chunk, the sentinel bit (from $F$) gets borrowed if and only if the chunk has any non-zero bit in positions below the leader.
+4. Mask out $C \mathbin{\&} F$ and XOR with $F$: get a 1 in the leading position of each chunk that was non-zero (after clearing leaders).
+5. OR back in $A$: now you have a word where the leading bit of each chunk is 1 iff that chunk is non-zero.
+
+<!-- TikZ: A 16-bit word split into 4 chunks of 4 bits. Step-by-step panels showing F, A = x AND F, B = x XOR A, C = F - B, the borrow detection, and final OR with A. Non-zero chunks highlighted. -->
+
+**Step 3: Compress chunk-summary to $\sqrt{w}$ consecutive bits.**
+
+Use the multiplication lemma for evenly-spaced bits (positions $\sqrt{w}-1, 2\sqrt{w}-1, \ldots$). Multiply by a precomputed $M$ to pack these $\sqrt{w}$ summary bits consecutively.
+
+**Step 4: Find MSB of the $\sqrt{w}$-bit summary.**
+
+This is a word of only $\sqrt{w}$ bits. Apply **parallel comparison** against the set $\{1, 2, 4, \ldots, 2^{\sqrt{w}-1}\}$ (or equivalently, against $\sqrt{w}$ threshold values). This uses the same subtraction trick from @sec-parallel, but the "keys" and "query" together fit comfortably in $O(1)$ words because $\sqrt{w} \cdot \sqrt{w} = w$.
+
+The result identifies the highest non-zero chunk (call it chunk $j$).
+
+**Step 5: Find MSB within chunk $j$.**
+
+Shift $x$ to isolate chunk $j$ (a $\sqrt{w}$-bit number). Apply parallel comparison again — same technique, same size. Done.
+
+**Total:** $O(1)$ Word-RAM operations (roughly 15–20 instructions; not recursive).
+
+::: {.callout-note title="Aside (mine, not the lecturer's)"}
+On modern 64-bit hardware, compilers expose `__builtin_clz` (count leading zeros), which maps to a single `BSR`/`LZCNT` instruction. The algorithm above is theoretically important — it proves MSB is $O(1)$ in the Word-RAM *without* assuming a hardware CLZ — but in practice you would use the intrinsic.
+:::
+
+
+## Putting it all together {#sec-assembly}
+
+A predecessor query on a fusion tree proceeds as follows:
+
+1. Start at the root.
+2. At each node, sketch the query $q$ using the node's precomputed multiplier $M$ and masks.
+3. Parallel-compare $\text{sk}(q)$ against all stored sketches. Identify tentative rank.
+4. Correct the rank: XOR $q$ with the two neighbouring keys, extract MSB, form $e$, re-compare.
+5. Follow the child pointer for the corrected rank.
+6. Repeat until reaching a leaf (which stores the actual predecessor).
+
+Each node: $O(1)$ operations. Height: $O(\log_w n)$. **Total: $O(\log_w n)$.**
+
+::: {.callout-tip title="Dynamic fusion trees"}
+Fredman and Willard's original paper handles only static sets. Anderson and Thorup later achieved $O(\log_w n + \log\log n)$ deterministic update time; Raman achieved $O(\log_w n)$ expected (randomised). The static version presented here captures the core ideas.
+:::
+
+
+## Cheat sheet {#sec-cheatsheet}
+
+::: {.callout-important title="Cheat sheet — Lecture 2"}
+**Fusion tree structure:** $k = \Theta(w^{1/5})$ keys per node; height $O(\log_w n)$; linear space.
+
+**Sketch compression:**
+
+- Branch bits ($r \leq k-1$): bit positions where stored keys diverge in the binary trie.
+- Sketch = projection to branch bits. Preserves order for stored keys.
+- Compression via multiplication: mask → multiply by $M$ → mask diagonal → shift. Result fits in $O(r^4) = O(w^{4/5})$ bits.
+- Choice of $M$: inductive argument mod $r^3$; guarantees no carries and $O(r^4)$ range.
+
+**Query correction (sketch can lie for non-stored keys):**
+
+- Find divergence point $y$ via $\text{MSB}(x_i \oplus q)$.
+- Form corrective element $e$ (pad with 0's or 1's depending on fall-off direction).
+- $e$'s true rank = $q$'s true rank.
+
+**Parallel comparison:**
+
+- Node word: $1\|\text{sk}(x_0)\|1\|\text{sk}(x_1)\|\cdots$
+- Query word: $0\|\text{sk}(q)\|0\|\text{sk}(q)\|\cdots$
+- Subtract → sentinel bits form monotone sequence → count 1's via multiply.
+
+**MSB in $O(1)$:**
+
+1. Split word into $\sqrt{w}$ chunks.
+2. Detect non-empty chunks (subtraction borrow trick + OR leading bits).
+3. Compress summary bits via multiplication.
+4. Parallel-compare $\sqrt{w}$-bit summary to find first non-zero chunk.
+5. Parallel-compare within that chunk to find exact bit.
+:::
+
+
+## FAQ — questions students actually asked {#sec-faq}
+
+**Q: Do you store the branch bits of all keys, or only the ones relevant to a particular $x_i$?**
+A: The branch bits are a property of the *node* (the set of all $x_i$ in that node), not of any individual key. Every key in the node is projected onto the same set of branch-bit positions, even if a particular $x_i$ doesn't actually branch there.
+
+**Q: In preprocessing, why can't we just shift bits to form a perfect sketch?**
+A: You can — for the stored keys $x_i$. But the query $q$ arrives online. Whatever sketch mechanism you use must apply to $q$ in $O(1)$ time. There is no single Word-RAM operation that extracts arbitrary bit positions and packs them contiguously. Multiplication with a carefully chosen $M$ is the workaround.
+
+**Q: For the query correction, how do you know whether $q$ fell off to the left or right?**
+A: Compute $\text{MSB}(x_i \oplus q)$ for both neighbours $x_i$ and $x_{i+1}$. The more significant of the two gives the divergence point. The bit value of $q$ at that position tells you the direction: 1 means $q$ went right, 0 means left.
+
+**Q: What if the sketch of $e$ ties with a stored sketch?**
+A: Compare $e$ (or equivalently $q$) directly against the tied $x_i$. There are at most 2 candidates, so this is $O(1)$ comparisons.
+
+**Q: Is the $w^{1/5}$ exponent tight?**
+A: It is chosen to make the three constraints fit: $k$ keys $\times$ $w$ bits/key spans $kw = w^{6/5}$ raw bits, the compressed sketch uses $r^4 \leq k^4 = w^{4/5}$ bits per key, and $k$ sketches total $k \cdot r^4 = w$ bits — just fitting in one word. Other constant exponents work but $1/5$ gives the cleanest accounting.
+
+**Q: Can fusion trees avoid multiplication?**
+A: Yes. A later result (Andersson, Hagerup, Nilsson, and Raman, 1998) gives multiplication-free fusion trees using AC$^0$ operations. The query time remains $O(\log_w n)$ but the constant factor is larger.
+
+
+## Further reading {#sec-further-reading}
+
+- **Fredman, M. L. and Willard, D. E.** "Surpassing the information theoretic bound with fusion trees." *Journal of Computer and System Sciences*, 47(3):424–436, 1993. — The original paper.
+
+- **Andersson, A. and Thorup, M.** "Dynamic ordered sets with exponential search trees." *Journal of the ACM*, 54(3):Article 13, 2007. — Dynamic fusion trees with $O(\log_w n + \log\log n)$ updates.
+
+- **Andersson, A., Hagerup, T., Nilsson, S., and Raman, R.** "Sorting in linear time?" *Journal of Computer and System Sciences*, 57(1):74–93, 1998. — Multiplication-free fusion trees and connections to linear-time sorting.
+
+- **Patrascu, M. and Thorup, M.** "Time-space trade-offs for predecessor search." *Proc. 38th STOC*, 2006. — Lower bound: $\Omega(\min(\log w, \log_w n))$.
+
+- **Willard, D. E.** "Log-logarithmic worst-case range queries are possible in space $\Theta(N)$." *Information Processing Letters*, 17(2):81–84, 1983. — Y-fast tries (the $O(\log w)$ complement).
+
+
+## Try it yourself {#sec-exercises}
+
+1. **Branch bits.** Given the key set $\{0010, 0110, 1001, 1100\}$ (4-bit universe), draw the binary trie, identify the branch bits, and compute the sketch of each key. Verify that sketch order matches key order.
+
+2. **Sketch distortion.** Using the same key set, construct a query $q$ whose sketch lands in the wrong interval. Walk through the correction procedure: compute $\text{MSB}(x_i \oplus q)$, determine the fall-off direction, form $e$, and verify that $e$'s rank is correct.
+
+3. **The multiplication lemma.** Prove: when branch-bit positions are evenly spaced ($b_i = i\sqrt{w} + \sqrt{w} - 1$), there exists a multiplier $M$ such that the diagonal positions $b_i + m_i$ are consecutive with no gaps. (Hint: set $m_i = (r-1-i)\sqrt{w}$ and verify.)
+
+4. **Parallel comparison by hand.** Let $k = 4$ and sketch width = 3 bits. Suppose the node sketch word is `1|010|1|011|1|101|1|110` and the query sketch is `100`. Write out the replicated query word, perform the subtraction, extract sentinels, and determine the query's rank.
+
+5. **Implementation.** Implement the MSB algorithm from @sec-msb in Python for 64-bit integers. Split into 8 chunks of 8 bits, detect non-empty chunks, find the first non-empty, then find the MSB within it. Compare your instruction count against `int.bit_length()`.
+
+```python
+def msb_fusion(x: int) -> int:
+    """Return index of most significant set bit (0-indexed from LSB)."""
+    assert 0 < x < (1 << 64)
+    SQRT_W = 8
+    W = 64
+    # F: leading bit of each chunk
+    F = 0
+    for i in range(SQRT_W):
+        F |= (1 << (i * SQRT_W + SQRT_W - 1))
+
+    # Step 1: capture and clear leading bits
+    A = x & F
+    B = x ^ A
+
+    # Step 2: detect non-empty chunks via borrow
+    C = F - B
+    non_empty_from_body = (C & F) ^ F  # 1 at leader pos if chunk body was non-zero
+    non_empty = non_empty_from_body | A  # include chunks whose leader was 1
+
+    # Step 3: find highest non-empty chunk (simple loop for clarity)
+    for chunk_idx in range(SQRT_W - 1, -1, -1):
+        leader_pos = chunk_idx * SQRT_W + SQRT_W - 1
+        if non_empty & (1 << leader_pos):
+            # Step 4: find MSB within this chunk
+            base = chunk_idx * SQRT_W
+            for bit in range(SQRT_W - 1, -1, -1):
+                if x & (1 << (base + bit)):
+                    return base + bit
+    return -1  # unreachable for x > 0
+```

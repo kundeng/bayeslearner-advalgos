@@ -1,0 +1,446 @@
+---
+title: "Multiplicative Weights and the Expert Advice Framework"
+subtitle: "COMPSCI 224 Lecture 19 — Fall 2014"
+author: "Companion notes by Kun Deng"
+date: today
+abstract: |
+  The multiplicative weights update (MWU) method provides a near-optimal
+  strategy for online prediction with expert advice: achieve total loss within
+  $(1+\varepsilon)$ of the best expert plus an $O(\ln n / \varepsilon)$ additive
+  term. Beyond prediction, MWU yields fast approximate solvers for packing and
+  covering LPs, reducing feasibility to a sequence of simple "oracle" calls on
+  a convex set. The framework has been independently discovered across
+  economics, game theory, machine learning, and algorithms.
+---
+
+## Why this lecture matters
+
+Most algorithms assume all information is available upfront. Online algorithms must act under uncertainty, making irrevocable decisions as data arrives. The multiplicative weights method is perhaps the single most versatile tool for this setting: it solves expert prediction, zero-sum games, flow problems, and LP relaxations through one unified update rule. This lecture builds the algorithm from first principles—starting with the trivial "kill wrong experts" strategy, progressing to weighted majority, and culminating in the full MWU guarantee. The LP application at the end connects online learning back to the optimisation thread running through the course.
+
+::: {.callout-tip title="30-second story"}
+1. With a perfect expert, majority vote + killing wrong experts makes at most $\log_2 n$ mistakes.
+2. With a best expert making $e$ errors, a revival strategy achieves $(e+1)\log_2 n$ mistakes.
+3. Multiplicative weights does better: total mistakes $\le 2(1+\varepsilon) \cdot e + O(\ln n / \varepsilon)$.
+4. The analysis uses a potential function (sum of weights) bounded above by induction and below by the best expert's weight.
+5. The method generalises to losses in $[-1,1]$ and probability distributions over experts.
+6. For LP feasibility, each constraint becomes an "expert" and MWU focuses weight on unsatisfied constraints, yielding approximate solutions in $O(\ln m / \varepsilon^2)$ rounds.
+:::
+
+## Warm-up: the halving algorithm {#sec-halving}
+
+### Setup
+
+There are $n$ experts and $T$ days. Each day, every expert predicts "yes" or "no." You must make a prediction, then reality is revealed. Your goal: minimise total mistakes.
+
+Without a benchmark, this is hopeless—reality could be adversarial. The standard benchmark: **be competitive with the best expert in hindsight**.
+
+### Majority vote with elimination
+
+**Algorithm.** Take a majority vote among surviving experts. At the end of each day, eliminate every expert who was wrong.
+
+<!-- TikZ: timeline showing n experts as horizontal bars, with red X marks where each is eliminated, and the surviving set shrinking over time -->
+
+::: {.callout-tip title="Why this works"}
+Every time *you* are wrong, the majority was wrong—so at least half the surviving experts are eliminated. The pool halves on each mistake.
+:::
+
+**Claim.** If there exists a perfect expert (one who is never wrong), you make at most $\lfloor\log_2 n\rfloor$ mistakes.
+
+*Proof.* Each mistake kills at least half the experts. The perfect expert survives forever. After $k$ mistakes, at most $n/2^k$ experts remain. Since at least one remains, $n/2^k \ge 1$, giving $k \le \log_2 n$. $\square$
+
+::: {.callout-warning title="Limitation"}
+If every expert errs on day 1, they're all dead. The algorithm has no recovery mechanism.
+:::
+
+### Handling imperfect experts: the revival trick {#sec-revival}
+
+The halving algorithm assumes a perfect expert exists. In practice, even the best expert makes mistakes. If on day 1 every expert is wrong, you kill everyone—now what?
+
+**Modified algorithm.** Run majority-vote-with-elimination as before. If all experts are dead, revive everyone and restart a new "phase."
+
+<!-- TikZ: timeline divided into phases by vertical dashed lines; in each phase the pool shrinks from n down to 0, then resets -->
+
+**Claim.** If the best expert makes $e$ errors over all $T$ days, you make at most $(e+1)\log_2 n$ mistakes.
+
+*Proof.* A "phase" begins at a revival event and ends at the next revival. The phase ends only when all experts—including the best one—are dead. So the best expert is killed exactly once per phase, meaning it made a mistake in that phase. Since the best expert makes $e$ total mistakes, there are at most $e+1$ phases (counting the initial one).
+
+Within each phase, the best expert is alive and acting as a "perfect expert" among the survivors. By the halving argument, we make at most $\log_2 n$ mistakes before killing everyone. Summing across phases: total mistakes $\le (e+1)\log_2 n$. $\square$
+
+This is a **$\log_2 n$ competitive ratio**: your mistakes $\le \log_2 n \cdot (\text{best expert's mistakes}) + \log_2 n$. The factor $\log_2 n$ is large. Can we reduce the multiplicative factor to a constant?
+
+::: {.callout-note title="The competitive analysis connection"}
+This setup mirrors the competitive analysis framework from earlier in the course. OPT corresponds to the best expert in hindsight. The competitive ratio measures how much worse you perform compared to this benchmark that has the luxury of knowing the future.
+:::
+
+## The weighted majority algorithm {#sec-weighted-majority}
+
+### The key insight: penalise, don't kill
+
+Instead of eliminating wrong experts, **reduce their weight**. Maintain a weight vector $w \in \mathbf{R}^n_{\ge 0}$, initialised to $w_i = 1$ for all $i$. On each day:
+
+1. Take a **weighted majority vote**: predict the answer backed by the larger total weight.
+2. After observing reality, for each wrong expert $i$: set $w_i \leftarrow (1-\varepsilon)\,w_i$.
+
+<!-- TikZ: bar chart showing expert weights before and after an update; wrong experts' bars shrink by factor (1-epsilon), correct experts unchanged -->
+
+::: {.callout-note title="Why not reward correct experts?"}
+Multiplying correct experts by $(1+\varepsilon)$ while leaving wrong experts unchanged is equivalent up to rescaling. All that matters is the *ratio* between weights. The convention of penalising wrong experts simplifies the algebra.
+:::
+
+### Analysis via potential function {#sec-potential-analysis}
+
+The proof uses a classic technique: sandwich a potential function between an upper bound (from algorithm behaviour) and a lower bound (from any single expert), then compare.
+
+Define the potential $\Phi(t) = \sum_{i=1}^n w_i(t)$. Initially $\Phi(1) = n$.
+
+**Upper bound on $\Phi$.** Consider a day when you (the algorithm) make a mistake. The weighted majority was wrong, meaning at least half the total weight supported the wrong answer. Those experts get penalised:
+
+- At least $\Phi(t)/2$ weight was on wrong experts $\to$ those weights shrink by factor $(1-\varepsilon)$
+- At most $\Phi(t)/2$ weight was on correct experts $\to$ those weights stay the same
+
+So:
+
+$$
+\Phi(t+1) \;\le\; \frac{\Phi(t)}{2}(1-\varepsilon) + \frac{\Phi(t)}{2} \;=\; \Bigl(1 - \frac{\varepsilon}{2}\Bigr)\Phi(t)
+$$ {#eq-potential-upper-step}
+
+On days when you're correct, some experts may still be wrong (and get penalised), so $\Phi$ can only decrease. The worst case for the upper bound is that the potential stays flat on correct days. By induction over the $M(T)$ mistake days:
+
+$$
+\Phi(T+1) \;\le\; n\,\Bigl(1 - \frac{\varepsilon}{2}\Bigr)^{M(T)} \;\le\; n\,e^{-\varepsilon\,M(T)/2}
+$$ {#eq-potential-upper}
+
+where the second inequality uses $1-x \le e^{-x}$.
+
+**Lower bound on $\Phi$.** The potential is a sum of non-negative weights, so it's at least any single weight. Pick expert $i$:
+
+$$
+\Phi(T+1) \;\ge\; w_i(T+1) \;=\; (1-\varepsilon)^{m_i(T)}
+$$ {#eq-potential-lower}
+
+where $m_i(T)$ is expert $i$'s total mistakes by time $T$. Each mistake multiplies the weight by $(1-\varepsilon)$; correct days leave it unchanged.
+
+<!-- TikZ: graph with time on x-axis, showing the upper bound (exponential in -M(T)) and lower bound (exponential in -m_i(T)) converging, with the actual Phi(t) curve between them -->
+
+**Combining the bounds.** Since the lower bound $\le$ $\Phi(T+1)$ $\le$ upper bound:
+
+$$
+(1-\varepsilon)^{m_i(T)} \;\le\; n\,e^{-\varepsilon\,M(T)/2}
+$$
+
+Take logarithms:
+
+$$
+m_i(T)\,\ln(1-\varepsilon) \;\le\; \ln n - \frac{\varepsilon}{2}\,M(T)
+$$
+
+Rearrange to isolate $M(T)$:
+
+$$
+M(T) \;\le\; \frac{2\ln n}{\varepsilon} - \frac{2}{\varepsilon}\,m_i(T)\,\ln(1-\varepsilon)
+$$
+
+Now use the calculus bound: for $\varepsilon \in (0, 1/2]$, Taylor expansion gives $\ln(1-\varepsilon) \ge -\varepsilon - \varepsilon^2$, so $-\ln(1-\varepsilon) \le \varepsilon + \varepsilon^2 = \varepsilon(1+\varepsilon)$. Therefore:
+
+$$
+M(T) \;\le\; 2(1+\varepsilon)\,m_i(T) + \frac{2\ln n}{\varepsilon}
+$$ {#eq-weighted-majority-bound}
+
+Since this holds for any $i$, take the minimum:
+
+::: {.callout-important title="The multiplicative weights guarantee"}
+For any $\varepsilon \in (0, 1/2]$, the weighted majority algorithm's total mistakes satisfies:
+$$M(T) \le 2(1+\varepsilon)\cdot\min_i m_i(T) + \frac{2\ln n}{\varepsilon}$$
+The multiplicative factor is $2(1+\varepsilon)$ (constant!) and the additive term is $O(\ln n / \varepsilon)$. Compared to the halving/revival algorithm's $O(\log n)$ multiplicative factor, this is a huge improvement—the price is paid only once as an additive term.
+:::
+
+## The full multiplicative weights update {#sec-mwu-general}
+
+### Generalising the model
+
+Two extensions make MWU applicable far beyond binary prediction:
+
+1. **Randomised predictions.** Instead of committing to one answer, output a probability distribution $p(t)$ over experts. Your expected loss on day $t$ is $m(t) \cdot p(t)$.
+
+2. **Continuous losses.** Expert $i$'s loss $m_i(t) \in [-1, 1]$ (not just $\{0,1\}$). Negative values represent gains.
+
+### The algorithm
+
+Maintain weights $w_i(t)$, starting at $w_i(1) = 1$. The output distribution and update rule:
+
+$$
+p_i(t) = \frac{w_i(t)}{\sum_j w_j(t)}, \qquad w_i(t+1) = w_i(t)\cdot(1 - \varepsilon\, m_i(t))
+$$ {#eq-mwu-update}
+
+When $m_i(t) = 1$ (mistake), the weight shrinks by $(1-\varepsilon)$—exactly as before. When $m_i(t) = -1$ (gain), the weight grows by $(1+\varepsilon)$.
+
+<!-- TikZ: probability simplex over 3 experts, showing how the distribution shifts toward the expert with lowest cumulative loss over several rounds -->
+
+::: {.callout-tip title="Intuition"}
+MWU implements a "trust but verify" philosophy. Every expert starts equally trusted. After each round, the algorithm adjusts trust multiplicatively: wrong experts lose a fixed *fraction* of their influence. This ensures no expert is ever fully silenced (unlike elimination), but chronically wrong experts become negligible.
+:::
+
+### The general theorem {#sec-mwu-theorem}
+
+**Theorem (MWU regret bound).** For any expert $i$ and any $\varepsilon \in (0, 1/2]$:
+
+$$
+\sum_{t=1}^T m(t) \cdot p(t) \;\le\; \sum_{t=1}^T m_i(t) + \varepsilon\sum_{t=1}^T |m_i(t)| + \frac{\ln n}{\varepsilon}
+$$ {#eq-mwu-regret}
+
+### Proof of the general theorem {#sec-mwu-proof}
+
+The proof follows the same potential-function template, adapted for continuous losses.
+
+**Upper bound.** Write out how $\Phi$ changes in one step:
+
+$$
+\Phi(t+1) = \sum_i w_i(t)(1-\varepsilon\,m_i(t)) = \Phi(t) - \varepsilon\sum_i w_i(t)\,m_i(t)
+$$
+
+Since $p_i(t) = w_i(t)/\Phi(t)$, the sum $\sum_i w_i(t)\,m_i(t) = \Phi(t)\cdot m(t)\cdot p(t)$. So:
+
+$$
+\Phi(t+1) = \Phi(t)\bigl(1 - \varepsilon\,m(t)\cdot p(t)\bigr) \;\le\; \Phi(t)\,e^{-\varepsilon\,m(t)\cdot p(t)}
+$$
+
+Telescoping over all $T$ steps:
+
+$$
+\Phi(T+1) \;\le\; n\,\exp\Bigl(-\varepsilon\sum_{t=1}^T m(t)\cdot p(t)\Bigr)
+$$ {#eq-mwu-upper}
+
+**Lower bound.** Isolate any expert $i$:
+
+$$
+\Phi(T+1) \;\ge\; w_i(T+1) = \prod_{t=1}^T (1-\varepsilon\,m_i(t))
+$$ {#eq-mwu-lower}
+
+**Bounding the product.** Split into days with $m_i(t) \ge 0$ and $m_i(t) < 0$:
+
+- When $m_i(t) \in [0,1]$: the function $f(x) = (1-\varepsilon)^x$ is convex, so $(1-\varepsilon\,x) \ge (1-\varepsilon)^x$. This gives a lower bound of $(1-\varepsilon)^{m_i(t)}$.
+- When $m_i(t) \in [-1,0]$: similarly, $(1-\varepsilon\,x) = (1+\varepsilon|x|) \ge (1+\varepsilon)^{|x|}$, giving $(1+\varepsilon)^{|m_i(t)|}$.
+
+Combining (and using $\ln(1-\varepsilon) \ge -\varepsilon - \varepsilon^2$ and $\ln(1+\varepsilon) \ge \varepsilon - \varepsilon^2$):
+
+$$
+\ln w_i(T+1) \;\ge\; -(\varepsilon+\varepsilon^2)\sum_{t: m_i(t)\ge 0} m_i(t) + (\varepsilon - \varepsilon^2)\sum_{t: m_i(t) < 0} |m_i(t)|
+$$
+
+**Combining and rearranging.** Set $\ln(\text{lower bound}) \le \ln(\text{upper bound})$, isolate $\sum_t m(t)\cdot p(t)$, and use that $\varepsilon^2 \le \varepsilon$ (since $\varepsilon \le 1$) to absorb second-order terms into the $\varepsilon\sum_t|m_i(t)|$ term. The result is @eq-mwu-regret.
+
+::: {.callout-note title="The many names of MWU"}
+MWU has been rediscovered independently as: the Hedge algorithm (Freund & Schapire, 1997), the weighted majority algorithm (Littlestone & Warmuth, 1994), exponentiated gradient descent (Kivinen & Warmuth, 1997), and multiplicative weights (Arora, Hazan, Kale, 2012). In game theory, it appears as fictitious play and regret matching. In economics, it underpins no-regret learning in repeated games. The unifying survey is the Arora–Hazan–Kale monograph (2012).
+:::
+
+## Application: approximately solving LPs {#sec-lp-application}
+
+### The feasibility framework
+
+Consider the feasibility problem: given $A \in \mathbf{R}^{m \times n}$, $b \in \mathbf{R}^m$, and a convex set $P \subseteq \mathbf{R}^n$, either:
+
+- **Certify infeasibility**: no $x \in P$ satisfies $Ax \ge b$, or
+- **Find approximately feasible** $x \in P$: $Ax \ge b - \varepsilon\,\mathbf{1}$.
+
+### The expert analogy
+
+Each **constraint** $i$ (row of $A$) is an "expert." On each day $t$, the algorithm picks some $x(t) \in P$ and defines the loss vector:
+
+$$
+m_i(t) = a_i^\top x(t) - b_i
+$$ {#eq-lp-loss}
+
+(After appropriate normalisation to $[-1,1]$.)
+
+Positive $m_i(t)$ means constraint $i$ is satisfied—the "expert" claiming it's hard was wrong. Negative means the constraint is violated. MWU increases weight on violated constraints and decreases weight on well-satisfied ones, focusing future iterations on the hardest constraints.
+
+<!-- TikZ: feasible polytope Ax >= b with the current point x(t) shown; violated constraint halfplanes shaded in red with heavier weight arrows, satisfied ones in green with lighter arrows -->
+
+### What property does $P$ need?
+
+The algorithm requires an **oracle**: given a weight distribution $p$ over constraints, find $x \in P$ that minimises (or approximately minimises) the weighted violation:
+
+$$
+\text{Oracle}(p): \quad \min_{x \in P} \sum_{i=1}^m p_i\,(b_i - a_i^\top x)
+$$
+
+This asks: "which $x \in P$ best satisfies the constraints that currently carry the most weight?" If the oracle returns an $x$ that maximises weighted *satisfaction*, then the MWU framework guarantees convergence.
+
+For packing/covering LPs, this oracle often decomposes beautifully. In a covering LP where $P = \{x \ge 0 : \mathbf{1}^\top x \le \alpha\}$, the oracle reduces to: allocate budget $\alpha$ to the variable that covers the most weighted elements—a simple greedy or sorting step.
+
+::: {.callout-important title="MWU for LP feasibility"}
+If the oracle can be evaluated in time $T_{\text{oracle}}$, MWU finds an $\varepsilon$-approximate feasible solution (or certifies infeasibility) in $O(\ln m / \varepsilon^2)$ oracle calls. Total time: $O(T_{\text{oracle}} \cdot \ln m / \varepsilon^2)$. For packing/covering LPs where the oracle is $O(n)$, the total is $O(n \ln m / \varepsilon^2)$—often much faster than general LP solvers.
+:::
+
+::: {.callout-tip title="Why the constraints-as-experts analogy works"}
+Think of it this way: each constraint "complains" proportionally to how violated it is. MWU allocates attention (weight) to the loudest complainers. Over time, either all constraints become approximately satisfied, or the weight concentrates on a subset that *cannot* be satisfied from within $P$—a certificate of infeasibility.
+:::
+
+### Example: fractional set cover {#sec-set-cover}
+
+**Problem.** Given a universe of elements and a collection of sets, find the minimum-weight sub-collection covering every element (LP relaxation: each $x_S \in [0,1]$).
+
+Suppose you know (or binary-search for) an upper bound $\alpha \ge \text{OPT}$. Set:
+
+$$
+P = \{x \ge 0 : \sum_S x_S \le \alpha\}
+$$
+
+The constraints are: for each element $e$, $\sum_{S \ni e} x_S \ge 1$.
+
+The MWU oracle with weights $p$ on elements asks: which sets should you "buy" (allocate weight to) to maximally cover high-weight elements, subject to total budget $\alpha$? This decomposes into a simple greedy step.
+
+After $O(\ln m / \varepsilon^2)$ rounds, MWU returns $x$ with $\sum_{S \ni e} x_S \ge 1 - \varepsilon$ for all $e$. Rescaling by $1/(1-\varepsilon)$ gives a feasible solution of cost at most $\alpha/(1-\varepsilon) = (1+O(\varepsilon))\,\alpha$.
+
+::: {.callout-warning title="MWU vs. interior point for LPs"}
+MWU gives $(1+\varepsilon)$-approximate solutions in time polynomial in $1/\varepsilon$. Interior point gives exact solutions (up to bit precision $L$) in $O(\sqrt{m}\,L)$ iterations. For applications needing only constant-factor approximations (like feeding into randomised rounding), MWU is often faster. For exact LP solving, interior point wins because it needs $O(\log(1/\varepsilon))$ iterations to reach precision $\varepsilon$, while MWU needs $O(1/\varepsilon^2)$.
+:::
+
+### The full MWU-LP pipeline {#sec-mwu-lp-pipeline}
+
+Here is the complete procedure for using MWU to solve a covering LP:
+
+1. **Binary search** on the objective value $\alpha$ (reducing optimisation to feasibility).
+2. **Define** $P = \{x \ge 0 : c^\top x \le \alpha\}$ and the constraints $Ax \ge b$.
+3. **Initialise** weights $w_i = 1$ for each constraint $i$.
+4. **Repeat** for $T = O(\ln m / \varepsilon^2)$ rounds:
+   a. Normalise: $p_i = w_i / \sum_j w_j$.
+   b. Call the oracle: find $x(t) \in P$ minimising $\sum_i p_i(b_i - a_i^\top x)$.
+   c. Compute the loss: $m_i(t) = (a_i^\top x(t) - b_i)$ (normalised to $[-1,1]$).
+   d. Update weights: $w_i \leftarrow w_i(1 - \varepsilon\, m_i(t))$.
+5. **Output** the average $\bar{x} = \frac{1}{T}\sum_{t=1}^T x(t)$.
+
+The averaging step is crucial: individual iterates $x(t)$ may violate some constraints badly, but the *average* inherits the MWU regret bound—ensuring approximate feasibility across all constraints simultaneously.
+
+<!-- TikZ: flowchart showing the MWU-LP loop: weights -> normalise -> oracle -> losses -> update -> repeat, with "output average" as a final step -->
+
+## Cheat sheet {#sec-cheatsheet}
+
+::: {.callout-important title="Cheat sheet — Multiplicative Weights"}
+
+**Halving algorithm** (perfect expert exists)
+
+- Majority vote + kill wrong experts
+- At most $\log_2 n$ mistakes
+- Fails when all experts err simultaneously
+
+**Weighted majority** (binary losses)
+
+- $w_i \leftarrow (1-\varepsilon)\,w_i$ for wrong experts
+- Guarantee: $M(T) \le 2(1+\varepsilon)\min_i m_i(T) + 2\ln n / \varepsilon$
+- Multiplicative factor is constant (not $\log n$!)
+
+**Full MWU** (losses in $[-1,1]$, randomised output)
+
+- $p_i(t) = w_i(t) / \sum_j w_j(t)$
+- Update: $w_i(t+1) = w_i(t)(1-\varepsilon\, m_i(t))$
+- Regret: $\sum_t m(t)\cdot p(t) \le \sum_t m_i(t) + \varepsilon\sum_t|m_i(t)| + \ln n/\varepsilon$
+
+**Potential function technique**
+
+- $\Phi(t) = \sum_i w_i(t)$
+- Upper: $\Phi(T+1) \le n\,e^{-\varepsilon\sum_t m(t)\cdot p(t)}$
+- Lower: $\Phi(T+1) \ge w_i(T+1) = \prod_t(1-\varepsilon m_i(t))$
+- Take logs, apply calculus bounds, rearrange
+
+**LP application**
+
+- Each constraint = one expert
+- Loss = how much constraint is satisfied (positive) or violated (negative)
+- Oracle: minimise weighted violation over $P$
+- Rounds: $O(\ln m / \varepsilon^2)$ for $\varepsilon$-feasibility
+:::
+
+## FAQ — questions students actually asked {#sec-faq}
+
+**Q: Can you go back to a killed expert in the revival algorithm?**
+
+Yes. "Killing" means ignoring, not permanent deletion. When everyone is dead, you revive all experts—including those killed earlier. The best expert gets revived each time it's incorrectly eliminated.
+
+**Q: Why not increase weights for correct experts instead of decreasing for wrong ones?**
+
+They're equivalent up to rescaling. If you multiply correct experts by $(1+\varepsilon)$ and leave wrong ones unchanged, the *ratios* between weights evolve identically to the penalty-only version. The convention of only penalising simplifies notation because the total potential never increases on correct days.
+
+**Q: In the LP application, what happens if the problem is actually infeasible?**
+
+If no $x \in P$ satisfies $Ax \ge b$, then for any $x(t)$ the oracle returns, there's always significant violation. The MWU guarantee implies that the weighted average loss $\sum_t m(t) \cdot p(t)$ is bounded. If after $O(\ln m / \varepsilon^2)$ rounds no approximately feasible point emerges, you can certify infeasibility (the dual certificate comes from the weight vector $p$ itself).
+
+**Q: The MWU guarantee has a factor of 2. Can you get $1+\varepsilon$ instead?**
+
+The factor of 2 comes from the "at least half the weight was wrong" argument for the deterministic weighted majority. In the randomised version (output a distribution $p$), the expected loss *is* $m(t) \cdot p(t)$—no factor of 2. The general theorem @eq-mwu-regret achieves $(1+\varepsilon)$-competitiveness.
+
+**Q: Why is MWU's dependence on $1/\varepsilon$ polynomial while interior point's is logarithmic?**
+
+MWU makes "soft" progress—adjusting weights multiplicatively converges slowly because it can never fully zero out a constraint. Interior point's Newton steps converge quadratically because they exploit second-order information. For exact LP solving, interior point's $O(\sqrt{m}\log(1/\varepsilon))$ beats MWU's $O(1/\varepsilon^2)$. MWU shines when you only need constant-factor approximations.
+
+## Further reading {#sec-further-reading}
+
+- **Arora, Hazan, and Kale**, "The Multiplicative Weights Update Method: A Meta-Algorithm and Applications" (*Theory of Computing*, 2012). The definitive survey—covers history, variants, and applications to games, LP solving, and boosting.
+- **Freund and Schapire**, "A Decision-Theoretic Generalization of On-Line Learning and an Application to Boosting" (*JCSS*, 1997). Introduces the Hedge algorithm and connects MWU to AdaBoost.
+- **Littlestone and Warmuth**, "The Weighted Majority Algorithm" (*Information and Computation*, 1994). The original weighted majority paper with the $2(1+\varepsilon)$ bound.
+- **Plotkin, Shmoys, and Tardos**, "Fast Approximation Algorithms for Fractional Packing and Covering Problems" (*Mathematics of Operations Research*, 1995). First application of MWU-style methods to LP approximation.
+- **Cesa-Bianchi and Lugosi**, *Prediction, Learning, and Games* (Cambridge, 2006). Textbook treatment of online learning and expert advice.
+
+## Try it yourself {#sec-exercises}
+
+1. **Tight example for halving.** Construct an instance with $n = 2^k$ experts and one perfect expert where the majority-vote-with-elimination algorithm makes exactly $k = \log_2 n$ mistakes.
+
+2. **Tuning $\varepsilon$.** The bound @eq-weighted-majority-bound has two terms: $2(1+\varepsilon)e$ and $2\ln n / \varepsilon$. If you know in advance that the best expert makes $e$ errors, what $\varepsilon$ minimises the bound? What total mistake count does this give?
+
+3. **Potential function for MWU.** Carry out the full calculation: starting from $\Phi(T+1) \ge \prod_t(1-\varepsilon\, m_i(t))$ and $\Phi(T+1) \le n\,e^{-\varepsilon\sum_t m(t)\cdot p(t)}$, derive @eq-mwu-regret. You will need: $\ln(1-x) \ge -x - x^2$ for $x \in [0, 1/2]$, and the convexity bound $(1-\varepsilon)^x \le 1-\varepsilon x$ for $x \in [0,1]$.
+
+4. **Implement MWU for set cover.** Given a universe $U = \{1,\ldots,20\}$ and random sets, implement MWU to find an approximately feasible fractional set cover. Track how the constraint weights evolve over iterations.
+
+```python
+import numpy as np
+
+def mwu_set_cover(A, alpha, eps=0.1, max_iter=500):
+    """
+    A: m x n binary matrix (A[i,j] = 1 if element i in set j)
+    alpha: budget upper bound on sum of x
+    eps: approximation parameter
+    Returns: approximately feasible x
+    """
+    m, n = A.shape
+    w = np.ones(m)  # weights on elements (constraints)
+    x_avg = np.zeros(n)
+
+    for t in range(max_iter):
+        p = w / w.sum()  # distribution over constraints
+
+        # Oracle: greedily allocate budget to maximise weighted coverage
+        # weighted benefit of set j = sum of p[i] for elements i in set j
+        benefit = A.T @ p  # shape (n,)
+        x_t = np.zeros(n)
+        # allocate all budget to highest-benefit set (simple oracle)
+        x_t[np.argmax(benefit)] = alpha
+
+        x_avg += x_t
+
+        # Compute losses: positive = satisfied, negative = violated
+        coverage = A @ x_t  # how much each element is covered
+        loss = (coverage - 1.0)  # want coverage >= 1
+        loss = np.clip(loss, -1, 1)  # normalise to [-1,1]
+
+        # Update weights
+        w *= (1 - eps * loss)
+
+    x_avg /= max_iter
+    return x_avg
+
+# Example
+np.random.seed(0)
+n_elements, n_sets = 20, 30
+A = (np.random.rand(n_elements, n_sets) > 0.7).astype(float)
+# Make sure every element is in at least one set
+for i in range(n_elements):
+    if A[i].sum() == 0:
+        A[i, np.random.randint(n_sets)] = 1.0
+
+x_sol = mwu_set_cover(A, alpha=5.0, eps=0.1)
+coverage = A @ x_sol
+print(f"Min coverage: {coverage.min():.3f} (want >= 1)")
+print(f"Total cost: {x_sol.sum():.3f}")
+```
+
+5. **MWU vs. interior point.** For random LP instances of increasing size ($m = 10, 50, 200, 1000$ constraints), compare the number of iterations MWU needs for $\varepsilon = 0.01$ feasibility versus the $O(\sqrt{m}\,L)$ iteration count of a path-following IPM. At what problem size does one dominate the other?

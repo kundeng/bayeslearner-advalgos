@@ -1,0 +1,312 @@
+---
+title: "Randomized Paging and the Online Primal-Dual Framework"
+subtitle: "COMPSCI 224 Lecture 9 — Fall 2014"
+author: "Companion notes by Kun Deng"
+date: today
+abstract: |
+  The Mark algorithm achieves a $2H_K$-competitive ratio for randomized paging
+  by exploiting the symmetry of random eviction within phases. No randomized
+  algorithm can beat $\Omega(\log K)$, as a coupon-collector argument shows.
+  The online primal-dual framework—built on LP duality and approximate
+  complementary slackness—provides a systematic recipe for designing and
+  analysing competitive online algorithms, demonstrated here on ski rental.
+---
+
+## Why this lecture matters
+
+Online algorithms must commit to irrevocable decisions without seeing the future. The Mark algorithm shows that even a single bit of randomness—choosing *which* page to evict uniformly at random—drops the competitive ratio from $K$ (deterministic) to $O(\log K)$. The second half of the lecture introduces the online primal-dual framework, a general-purpose machine that converts LP relaxations into competitive online algorithms. Master this framework and you can design algorithms for ski rental, set cover, weighted paging, and the $K$-server problem from the same template.
+
+::: {.callout-tip title="30-second story"}
+1. The Mark algorithm evicts a uniformly random unmarked page, achieving competitive ratio $2H_K \approx 2\ln K$.
+2. A coupon-collector lower bound proves no randomized algorithm beats $\Omega(\log K)$.
+3. The $K$-server problem generalises paging; polylogarithmic competitive ratios remain an active research frontier.
+4. LP duality gives a mechanical way to certify lower bounds on OPT.
+5. Approximate complementary slackness converts feasible primal/dual pairs into competitive-ratio proofs.
+6. Applied to ski rental, the primal-dual method recovers the 2-competitive deterministic algorithm—and sets the stage for $e/(e-1)$ via randomization.
+:::
+
+## Analysis of the Mark algorithm {#sec-mark-analysis}
+
+The Mark algorithm (Fiat et al., *Journal of Algorithms*, 1991) is a randomised implementation of one-bit LRU: when a page must be brought into cache, evict a uniformly random *unmarked* page, then mark the newly loaded page. If all pages are marked, unmark everything and continue.
+
+### Phase decomposition
+
+Divide time into **phases**. A phase starts when all pages are unmarked and ends just before the next unmark-all event. Within a single phase, exactly $K$ distinct pages are requested (since each request marks a page, and the phase ends when all $K$ slots are marked and a request falls outside the cache).
+
+::: {.callout-note title="Key definitions"}
+- **Clean page**: not requested in the previous phase *and* not yet requested in the current phase.
+- **Stale page**: requested last phase but not yet this phase.
+:::
+
+Let $L_i$ = number of clean pages requested in phase $i$, and $S_i = K - L_i$ = number of stale pages requested. Every phase requests exactly $K$ distinct pages, partitioned into $L_i$ clean and $S_i$ stale.
+
+### Comparing Mark to OPT
+
+Define $D_i$ = number of pages in OPT's cache at the start of phase $i$ that are *not* in Mark's cache. Define $D_i'$ = the same quantity at the end of phase $i$ (so $D_i' = D_{i+1}$).
+
+<!-- TikZ: side-by-side cache diagrams for Mark vs OPT at phase boundary, showing D_i differing pages shaded -->
+
+**Claim 1.** OPT pays at least $\max(L_i - D_i,\; D_i')$ cache misses in phase $i$.
+
+- *Why $\geq L_i - D_i$*: Mark doesn't hold any clean page at the start of the phase. OPT can hold at most $D_i$ clean pages (the pages where it differs from Mark). The remaining $L_i - D_i$ clean requests force OPT to fault.
+- *Why $\geq D_i'$*: At the end of a phase, Mark holds exactly the $K$ pages requested in that phase. Each of OPT's $D_i'$ differing pages corresponds to an eviction OPT made during the phase.
+
+Taking the average of the two lower bounds:
+
+$$
+\text{OPT cost in phase } i \;\geq\; \frac{L_i - D_i + D_i'}{2} \;\geq\; \frac{L_i}{2} + \frac{D_i' - D_i}{2}
+$$ {#eq-opt-lower}
+
+Summing over all phases and noting that the telescoping $D$ terms collapse (both algorithms start with the same cache):
+
+$$
+\text{OPT total} \;\geq\; \frac{1}{2}\sum_i L_i
+$$ {#eq-opt-total}
+
+### Expected cost of Mark on stale requests
+
+Fix a point in a phase where $s$ stale requests and $c$ clean requests have already been served. Mark's cache looks like:
+
+<!-- TikZ: cache diagram of size K partitioned into c clean slots, s stale-already-requested slots, and K-s-c remaining stale slots (random subset) -->
+
+The remaining $K - s - c$ slots hold a *uniformly random* subset of the stale pages not yet requested. The next stale request faults if it is *not* among these survivors. Its fault probability is:
+
+$$
+\Pr[\text{fault}] = \frac{c}{K - s} \;\leq\; \frac{L_i}{K - s}
+$$ {#eq-stale-fault}
+
+Summing over all stale requests ($s$ ranges from $0$ to $K - L_i - 1$):
+
+$$
+\mathbb{E}[\text{stale cost in phase } i] \;\leq\; L_i \sum_{s=0}^{K-L_i-1} \frac{1}{K-s} = L_i\bigl(H_K - H_{L_i}\bigr) \;\leq\; L_i(H_K - 1)
+$$
+
+Adding the $L_i$ deterministic faults from clean requests:
+
+$$
+\mathbb{E}[\text{Mark cost in phase } i] \;=\; L_i + L_i(H_K - 1) \;=\; L_i \cdot H_K
+$$ {#eq-mark-cost}
+
+Combining @eq-opt-total and @eq-mark-cost gives a competitive ratio of $2H_K$.
+
+::: {.callout-important}
+The Mark algorithm is $2H_K$-competitive, where $H_K = 1 + \frac{1}{2} + \cdots + \frac{1}{K} = \ln K + O(1)$.
+:::
+
+## Lower bound: no randomised algorithm beats $\Omega(\log K)$ {#sec-lower-bound}
+
+**Theorem** (Fiat et al.). Any randomised paging algorithm has competitive ratio $\Omega(\log K)$.
+
+**Proof sketch.** Let the universe contain $K+1$ pages. Generate a request sequence of length $M$ uniformly at random.
+
+- *Any algorithm* holds $K$ of $K+1$ pages, so its expected cost per request is $\frac{1}{K+1}$—roughly $\frac{M}{K}$ total faults over the sequence.
+- *OPT* uses the Bélády (furthest-in-future) policy. After each eviction, the evicted page won't reappear until every other page has been seen—a coupon-collector wait of $\Theta(K \log K)$ requests.
+- OPT therefore faults only once per $\Theta(K \log K)$ requests, paying $\Theta\!\bigl(\frac{M}{K \log K}\bigr)$ total.
+
+The ratio is $\frac{M/K}{M/(K\log K)} = \log K$.
+
+::: {.callout-tip title="Intuition"}
+OPT exploits the long tail of the coupon-collector distribution: the page it evicts is, in expectation, the last one to reappear. Any online algorithm—even randomised—cannot predict which page is farthest in the future.
+:::
+
+## The $K$-server problem and open questions {#sec-k-server}
+
+Paging is the special case of the **$K$-server problem** where all distances are 1. In the general problem, $K$ servers live in a metric space, and serving a request means moving a server to the requested point at cost equal to the distance moved.
+
+| Result | Ratio | Reference |
+|--------|-------|-----------|
+| Work function algorithm (deterministic) | $2K - 1$ | Koutsoupias & Papadimitriou, JACM 1995 |
+| Deterministic lower bound | $K$ | — |
+| Randomised (metric with $n$ points) | $O(\log^2 K \cdot \log^3 n \cdot \log\log n)$ | Bansal, Buchbinder, Madry, Naor, 2011 |
+| Conjectured randomised | $O(\log K)$ | Open |
+
+::: {.callout-note title="Aside (mine, not the lecturer's)"}
+The randomised $K$-server conjecture—that $O(\log K)$ is achievable in any metric—remains one of the flagship open problems in online algorithms as of 2024.
+:::
+
+**Weighted paging** (pages have non-uniform fetch costs) is a special case of $K$-server. Bansal, Buchbinder, and Naor (FOCS 2007) achieved $O(\log K)$-competitive for weighted paging using the primal-dual framework.
+
+## Linear programming recap {#sec-lp-recap}
+
+A **linear program** (LP) in standard covering form:
+
+$$
+\min\; \mathbf{c}^\top \mathbf{x} \quad\text{s.t.}\quad A\mathbf{x} \geq \mathbf{b},\;\; \mathbf{x} \geq \mathbf{0}
+$$ {#eq-covering-lp}
+
+A covering LP requires all entries of $A$, $\mathbf{b}$, $\mathbf{c}$ to be non-negative.
+
+### LP duality
+
+The **dual** LP provides the tightest lower bound on the primal optimum obtainable by taking non-negative linear combinations of the primal constraints:
+
+$$
+\max\; \mathbf{b}^\top \mathbf{y} \quad\text{s.t.}\quad A^\top \mathbf{y} \leq \mathbf{c},\;\; \mathbf{y} \geq \mathbf{0}
+$$ {#eq-packing-lp}
+
+The dual of a covering LP is a **packing** LP (all entries non-negative, constraints are $\leq$).
+
+<!-- TikZ: diagram showing primal (minimize, ≥ constraints) on left connected by double arrow to dual (maximize, ≤ constraints) on right, with annotations: "rows ↔ variables", "RHS ↔ objective coefficients" -->
+
+::: {.callout-important title="Weak duality"}
+For any feasible primal $\mathbf{x}$ and feasible dual $\mathbf{y}$:
+$$
+\mathbf{b}^\top \mathbf{y} \;\leq\; \text{OPT}_D \;\leq\; \text{OPT}_P \;\leq\; \mathbf{c}^\top \mathbf{x}
+$$
+:::
+
+Strong duality (not needed today) says $\text{OPT}_P = \text{OPT}_D$ when both are finite.
+
+## The online primal-dual framework {#sec-online-pd}
+
+The framework (Buchbinder & Naor, 2005/2009) translates online covering problems into competitive algorithms:
+
+1. Write the online problem as a covering LP whose constraints arrive one at a time.
+2. Maintain feasible primal and dual solutions, with primal variables monotonically non-decreasing.
+3. Use approximate complementary slackness to bound the competitive ratio.
+
+### Approximate complementary slackness {#sec-acs}
+
+**Lemma.** Let $\mathbf{x}$, $\mathbf{y}$ be feasible for the primal and dual respectively. Suppose there exist $\alpha, \beta \geq 1$ such that:
+
+- If $x_j > 0$ then $\frac{c_j}{\alpha} \leq (A^\top \mathbf{y})_j \leq c_j$ (the $j$-th dual constraint is nearly tight).
+- If $y_i > 0$ then $b_i \leq (A\mathbf{x})_i \leq \beta \cdot b_i$ (the $i$-th primal constraint is nearly tight).
+
+Then $\mathbf{c}^\top \mathbf{x} \leq \alpha\beta \cdot \mathbf{b}^\top \mathbf{y} \leq \alpha\beta \cdot \text{OPT}$.
+
+::: {.callout-tip}
+The ratio $\alpha\beta$ is your competitive ratio. The art is constructing primal/dual pairs where both slackness parameters are small.
+:::
+
+## Ski rental via primal-dual {#sec-ski-rental-pd}
+
+**Problem.** Each day you either rent skis (\$1) or buy them (\$$B$). Once bought, you never pay again. The season lasts $K$ days (unknown in advance).
+
+### LP formulation
+
+Let $x \in \{0,1\}$ indicate buying; $z_i \in \{0,1\}$ indicate renting on day $i$.
+
+$$
+\textbf{Primal:}\quad \min\; Bx + \sum_{i=1}^K z_i \quad\text{s.t.}\quad x + z_i \geq 1 \;\;\forall i,\;\; x,z_i \geq 0
+$$ {#eq-ski-primal}
+
+$$
+\textbf{Dual:}\quad \max\; \sum_{i=1}^K y_i \quad\text{s.t.}\quad \sum_{i=1}^K y_i \leq B,\;\; 0 \leq y_i \leq 1 \;\;\forall i
+$$ {#eq-ski-dual}
+
+<!-- TikZ: timeline diagram showing days 1..K, with primal variables x, z_i on top and dual variables y_i below, arrows showing constraint correspondence -->
+
+### The 2-competitive primal-dual algorithm
+
+When constraint $i$ arrives (i.e., day $i$ begins):
+
+1. If $x = 1$ already, do nothing.
+2. Otherwise, increase $y_i$ until some dual constraint becomes tight:
+   - If $y_i$ hits 1 → set $z_i = 1$ (rent today).
+   - If $\sum y_i$ hits $B$ → set $x = 1$ (buy).
+
+**Analysis.** Both primal and dual solutions are feasible by construction:
+
+- If $x > 0$: the constraint $\sum y_i \leq B$ is exactly tight → $\alpha = 1$.
+- If $z_i > 0$: the constraint $y_i \leq 1$ is exactly tight → $\alpha = 1$.
+- If $y_i > 0$: the primal constraint $x + z_i \geq 1$ is satisfied, and might be as large as 2 (both $x=1$ and $z_i=1$) → $\beta = 2$.
+
+By approximate complementary slackness: competitive ratio $\leq \alpha\beta = 1 \times 2 = 2$.
+
+::: {.callout-warning}
+This is the same 2-competitive bound we obtained by the simpler "rent for $B-1$ days, then buy" strategy. The primal-dual framework is overkill here—but it scales to harder problems (randomised ski rental, weighted paging, set cover) where ad-hoc arguments break down.
+:::
+
+## Cheat sheet {#sec-cheat-sheet}
+
+::: {.callout-important title="Cheat sheet — Lecture 9"}
+
+**Mark algorithm**
+
+- Evict uniformly random unmarked page; mark on access; unmark all when full.
+- Competitive ratio: $2H_K$ (optimal up to factor 2; tight ratio is $H_K$).
+- Analysis: phase decomposition → stale faults bounded by harmonic sum.
+
+**Lower bound**
+
+- Universe of $K+1$ pages, random requests → any algorithm faults at rate $1/(K+1)$.
+- OPT faults at rate $1/\Theta(K\log K)$ (coupon collector).
+- Gap: $\Omega(\log K)$.
+
+**Online primal-dual**
+
+- Write problem as covering LP with constraints arriving online.
+- Maintain monotone primal + dual; compare objectives.
+- Approximate complementary slackness: $\alpha\beta$ = competitive ratio.
+
+**Ski rental LP**
+
+- Primal: $\min Bx + \sum z_i$ s.t. $x + z_i \geq 1$.
+- Dual: $\max \sum y_i$ s.t. $\sum y_i \leq B$, $y_i \leq 1$.
+- Deterministic primal-dual: 2-competitive.
+:::
+
+## FAQ — questions students actually asked {#sec-faq}
+
+**Q: In the Mark algorithm, does it matter what the initial cache contents are?**
+A: No. The first phase simply unmarks everything. The analysis assumes both Mark and OPT start with identical cache contents; otherwise competitive analysis is vacuous (OPT could start with all future requests pre-loaded).
+
+**Q: When you sum the OPT lower bound over phases, why does the telescoping term vanish?**
+A: The sum $\sum_i (D_i' - D_i) = D_{\text{final}} - D_{\text{initial}}$. Since both start with the same cache, $D_{\text{initial}} = 0$, and $D_{\text{final}} \geq 0$, so the sum is non-negative and can be dropped as a lower bound.
+
+**Q: The LP for ski rental doesn't capture *when* you buy. Isn't that a problem?**
+A: The LP doesn't model time ordering—it just says "cover every day." The online algorithm sees constraints sequentially and increases variables monotonically, which implicitly encodes irreversibility. The LP relaxation gives a valid lower bound on any feasible (including online) solution.
+
+**Q: Why does it matter that variables are monotonically non-decreasing?**
+A: Without monotonicity, you could "undo" past decisions—set $z_i = 1$ then later reset it to 0 when you decide to buy. Monotonicity models the fact that rental money already spent cannot be reclaimed.
+
+**Q: Is the gap between $2H_K$ and $H_K$ for paging closed?**
+A: Yes. Mcgeoch and Sleator (Algorithmica, 1991) and later Achlioptas et al. (TCS, 2000) gave $H_K$-competitive algorithms. The Mark algorithm's factor-of-2 loss comes from averaging the two OPT lower bounds.
+
+## Further reading {#sec-further-reading}
+
+- **Fiat, A., Karp, R. M., Luby, M., McGeoch, L. A., Sleator, D. D., & Young, N. E.** (1991). Competitive paging algorithms. *Journal of Algorithms*, 12(4), 685–699. — Original Mark algorithm and $\Omega(\log K)$ lower bound.
+- **McGeoch, L. A. & Sleator, D. D.** (1991). A strongly competitive randomized paging algorithm. *Algorithmica*, 6(6), 816–825. — First $H_K$-competitive algorithm.
+- **Buchbinder, N. & Naor, J.** (2009). The design of competitive online algorithms via a primal-dual approach. *Foundations and Trends in Theoretical Computer Science*, 3(2–3), 93–263. — The definitive reference for online primal-dual.
+- **Koutsoupias, E. & Papadimitriou, C. H.** (1995). On the $K$-server conjecture. *Journal of the ACM*, 42(5), 971–983. — Work function algorithm, $2K-1$ competitive.
+- **Bansal, N., Buchbinder, N., Madry, A., & Naor, J.** (2011). A polylogarithmic-competitive algorithm for the $K$-server problem. *FOCS 2011*. — Breakthrough randomised bound.
+
+## Try it yourself {#sec-exercises}
+
+1. **Harmonic warmup.** Prove that $H_K = \ln K + \Theta(1)$ by bounding the harmonic sum with integrals from above and below.
+
+2. **Phase cost tightness.** Construct a request sequence on $K+1$ pages where the Mark algorithm's expected cost in a single phase is exactly $L \cdot H_K$ (not just an upper bound).
+
+3. **Dual construction.** For the ski rental LP with $B = 5$ and $K = 8$, write out the primal-dual algorithm's execution step by step. Verify that the dual is feasible and the competitive ratio is 2.
+
+4. **Coupon collector concentration.** Using Markov's inequality, show that for a random sequence of length $M = 2K\ln K$ over a universe of $K+1$ pages, OPT's expected cost is $O(M / (K\log K))$.
+
+5. **Code it.** Implement the Mark algorithm and the Bélády (MIN) algorithm in Python. Generate random request sequences over $K+1$ pages and empirically measure the competitive ratio as a function of $K$ for $K \in \{4, 8, 16, 32, 64\}$. Plot the ratio against $\ln K$.
+
+```python
+import numpy as np
+
+def mark_algorithm(requests, cache_size):
+    """Simulate the Mark algorithm. Return total number of faults."""
+    cache = set()
+    marked = set()
+    faults = 0
+
+    for page in requests:
+        if page in cache:
+            marked.add(page)
+        else:
+            faults += 1
+            if len(cache) == cache_size:
+                # Evict random unmarked page
+                unmarked = list(cache - marked)
+                if not unmarked:
+                    marked.clear()
+                    unmarked = list(cache)
+                victim = unmarked[np.random.randint(len(unmarked))]
+                cache.remove(victim)
+            cache.add(page)
+            marked.add(page)
+
+    return faults
+```

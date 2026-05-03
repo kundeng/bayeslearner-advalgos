@@ -1,0 +1,77 @@
+project:
+  type: book
+  output-dir: _book
+
+book:
+  title: "Advanced Algorithms"
+  subtitle: "Companion Notes for Harvard COMPSCI 224"
+  author:
+    - "Kun Deng"
+    - "Claude (Anthropic)"
+  date: today
+  chapters:
+    - index.qmd
+    - part: "Data Structures"
+      chapters:
+        - lectures/01-lecture1.qmd
+        - lectures/02-lecture2.qmd
+        - lectures/03-lecture3.qmd
+        - lectures/04-lecture4.qmd
+        - lectures/05-lecture5.qmd
+        - lectures/06-lecture6.qmd
+        - lectures/07-lecture7.qmd
+    - part: "Online Algorithms"
+      chapters:
+        - lectures/08-lecture8.qmd
+        - lectures/09-lecture9.qmd
+        - lectures/10-lecture10.qmd
+    - part: "Approximation Algorithms and LP"
+      chapters:
+        - lectures/11-lecture11.qmd
+        - lectures/12-lecture12.qmd
+        - lectures/13-lecture13.qmd
+        - lectures/15-lecture15.qmd
+        - lectures/16-lecture16.qmd
+        - lectures/17-lecture17.qmd
+        - lectures/18-lecture18.qmd
+    - part: "Multiplicative Weights and Network Flows"
+      chapters:
+        - lectures/19-lecture19.qmd
+        - lectures/20-lecture20.qmd
+        - lectures/21-lecture21.qmd
+        - lectures/22-lecture22.qmd
+        - lectures/23-lecture23.qmd
+    - part: "Streaming and Sketching"
+      chapters:
+        - lectures/25-lecture25.qmd
+        - lectures/26-lecture26.qmd
+
+format:
+  html:
+    theme: cosmo
+    code-fold: false
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    highlight-style: github
+    html-math-method: mathjax
+
+  pdf:
+    documentclass: scrbook
+    papersize: letter
+    fontsize: 11pt
+    mainfont: "STIX Two Text"
+    monofont: "Menlo"
+    mathfont: "STIX Two Math"
+    number-sections: true
+    toc: true
+    toc-depth: 3
+    geometry:
+      - top=1.2cm
+      - bottom=1.2cm
+      - left=1.5cm
+      - right=1.5cm
+    colorlinks: true
+
+execute:
+  enabled: false

@@ -1,0 +1,340 @@
+---
+title: "Solving Linear Programs: The Simplex Algorithm"
+subtitle: "COMPSCI 224 Lecture 15 — Fall 2014"
+author: "Companion notes by Kun Deng"
+date: today
+abstract: |
+  Linear programs have been a black box so far — "there is a magic machine
+  that solves them." This lecture opens the box. The Simplex algorithm
+  (Dantzig, 1947) walks greedily along vertices of the feasible polytope,
+  improving the objective at every step. Along the way, we prove that
+  bounded LPs always have optimal vertices, characterise vertices as points
+  with linearly independent active constraints, and show how to read off
+  strong duality from Simplex's halting condition. Simplex has no known
+  polynomial-time pivoting rule, yet dominates practice; the ellipsoid
+  method provides the polynomial-time guarantee but not the speed.
+---
+
+## Why this lecture matters {#sec-why}
+
+You have used LPs throughout this course as a modelling tool — for approximation algorithms, for integrality gaps, for relaxations. Every time, you trusted that the LP could be solved. Now you see *how*. Simplex is one of the most important algorithms ever implemented: it runs inside every operations-research solver, every logistics optimizer, every portfolio allocation engine. Understanding its mechanics — especially the vertex-hopping intuition and the duality connection — will sharpen your ability to reason about LP-based algorithms.
+
+::: {.callout-tip title="The 30-second story"}
+1. Every LP can be written in **standard form**: minimise $c^\top x$ subject to $Ax = b$, $x \ge 0$.
+2. If a standard-form LP is bounded and feasible, it has an **optimal vertex** — a point $x$ where the active constraint columns of $A$ are linearly independent.
+3. **Simplex** starts at a vertex (found by solving an auxiliary LP), then greedily moves to adjacent vertices with lower cost by pivoting: swap one variable into the basis and one out.
+4. The halting condition — all reduced costs non-negative — simultaneously certifies optimality and yields a **dual feasible solution** proving strong duality.
+5. No known pivoting rule makes Simplex run in polynomial worst-case time, but it is fast in practice. The **ellipsoid method** (Khachiyan, 1979) gives a polynomial-time guarantee.
+:::
+
+
+## Standard form {#sec-standard-form}
+
+All LP formulations — $\le$, $\ge$, $=$, max, min — can be converted to a single canonical shape.
+
+::: {.callout-important title="Standard form"}
+$$
+\min \; c^\top x \quad \text{subject to} \quad Ax = b, \quad x \ge 0
+$$ {#eq-standard}
+
+where $x \in \mathbb{R}^n$, $A \in \mathbb{R}^{m \times n}$, and $n \ge m$.
+:::
+
+### How to get there {#sec-getting-standard}
+
+Three transformations suffice:
+
+**1. Maximisation → minimisation.** Replace $\max\, c^\top x$ with $\min\, (-c)^\top x$.
+
+**2. Inequality → equality via slack variables.** Replace $a_i^\top x \ge b_i$ with
+$$
+a_i^\top x - s_i = b_i, \quad s_i \ge 0.
+$$ {#eq-slack}
+The slack $s_i$ absorbs the gap between the left- and right-hand sides. Similarly, $a_i^\top x \le b_i$ becomes $-a_i^\top x \ge -b_i$, then add a slack.
+
+**3. Free variables → non-negative pairs.** Replace any unconstrained variable $x_i$ with $x_i = x_i^+ - x_i^-$, where $x_i^+, x_i^- \ge 0$.
+
+After these steps, every variable (original, slack, and split) is non-negative, and every constraint is an equality. The number of variables $n$ is at least $m$ (the number of constraints) because each constraint contributes at least one slack.
+
+::: {.callout-tip}
+Standard form is not a restriction — it is a notational convenience. The Simplex algorithm operates on this form; every LP you have seen can be rewritten this way without loss.
+:::
+
+
+## Geometry: the feasible polytope {#sec-geometry}
+
+The set of feasible solutions is a **polytope**:
+
+$$
+P = \{x \in \mathbb{R}^n : Ax = b, \; x \ge 0\}
+$$
+
+<!-- TikZ: A 2D polytope (pentagon) with vertices labeled v_1 through v_5. A vector c drawn outside pointing toward the polytope, showing the direction of decreasing objective. An arrow tracing the path v_1 → v_2 → v_3 along edges, with v_3 marked as optimal. -->
+
+Simplex's geometric picture: start at a vertex, walk along edges to adjacent vertices that improve the objective, stop at the optimal vertex.
+
+### Vertex definition {#sec-vertex-def}
+
+::: {.callout-important title="Definition: vertex"}
+A point $x \in P$ is a **vertex** of $P$ if there does *not* exist a non-zero vector $y$ such that both $x + y \in P$ and $x - y \in P$.
+:::
+
+A vertex is a point that cannot be expressed as the midpoint of two distinct feasible points. It is an "extreme point" — you cannot wiggle in any direction while staying feasible. In two dimensions, vertices are the corners of the polygon; in higher dimensions, they are the analogous sharp points of the polytope where many constraint hyperplanes meet.
+
+::: {.callout-tip}
+Think of the vertex definition operationally: try to "jiggle" $x$ by adding and subtracting a direction $y$. If *both* $x + y$ and $x - y$ stay feasible, you are in the interior (or on a face, but not at a corner). If no such $y$ exists, you are stuck at a vertex — every direction of motion violates at least one constraint.
+:::
+
+
+## Finding a starting vertex {#sec-starting-vertex}
+
+Simplex needs a vertex to start. But finding *any* feasible point is, in general, as hard as solving an LP (you can binary-search on the objective and add it as a constraint). The trick: construct an **auxiliary LP** with a known starting vertex, solve it with Simplex, and extract a starting vertex for the original problem.
+
+### The auxiliary LP {#sec-auxiliary-lp}
+
+Given the original LP with constraints $Ax = b$, $x \ge 0$, fix any feasible point $v$ (or set $v = 0$ if that works). Define:
+
+$$
+\min \; t \quad \text{subject to} \quad Ax = (1 - t)\,b, \quad x \ge 0, \quad 0 \le t \le 1
+$$ {#eq-auxiliary}
+
+To put this in standard form, replace $t \le 1$ with $s_t + t = 1$, $s_t \ge 0$.
+
+**Starting point.** Set $x = 0$, $t = 1$, $s_t = 0$. This satisfies all constraints: $A \cdot 0 = (1 - 1) \cdot b = 0$. It is a vertex because every variable is at a boundary — any perturbation $y$ would push some variable negative.
+
+**Goal.** Minimise $t$. If the optimal $t = 0$, then $Ax = b$ and $x \ge 0$ — so $x$ is a feasible point for the original LP. In fact, the point returned is a vertex of the original polytope.
+
+::: {.callout-note}
+Run Simplex on the auxiliary LP (starting from $x = 0, t = 1$). If the minimum $t > 0$, the original LP is infeasible. If $t = 0$, read off $x$ — it is a starting vertex for the original LP. Then run Simplex a second time on the original LP.
+:::
+
+
+## Vertices are optimal {#sec-vertex-optimal}
+
+The central structural result: you never need to look beyond vertices.
+
+::: {.callout-important title="Claim"}
+If an LP is bounded (optimal value $> -\infty$), then for every feasible $x$ there exists a vertex $x'$ with $c^\top x' \le c^\top x$.
+:::
+
+### Proof sketch {#sec-vertex-proof}
+
+Start from any feasible $x$. If $x$ is not a vertex, there exists a non-zero $y$ with $x + y \in P$ and $x - y \in P$. This implies $Ay = 0$ (subtract the two equality constraints). Two cases:
+
+**Case 1: there exists $j$ with $y_j < 0$.** Without loss of generality, $c^\top y \le 0$ (otherwise replace $y$ with $-y$). If $c^\top y = 0$, we can arrange for some $y_j < 0$. Now increase $t$ from 0: consider $x + ty$ for $t > 0$. As $t$ grows, some coordinate $j$ with $y_j < 0$ will hit zero:
+
+$$
+t^* = \min_{j : y_j < 0} \frac{-x_j}{y_j} > 0
+$$ {#eq-t-star}
+
+($t^* > 0$ because $x_j > 0$ whenever $y_j \ne 0$, by feasibility). Replace $x$ with $x + t^* y$. The new point is feasible, has $c^\top(x + t^* y) \le c^\top x$, and has at least one more zero coordinate. This case can happen at most $n$ times before we reach a vertex.
+
+**Case 2: $y_j \ge 0$ for all $j$ (with at least one strict inequality).** Then $x + ty$ is feasible for all $t > 0$, and $c^\top(x + ty) = c^\top x + t \cdot c^\top y$. Since we arranged $c^\top y < 0$ (case 1 handles equality), sending $t \to \infty$ gives $c^\top(x + ty) \to -\infty$ — contradicting boundedness. So case 2 cannot happen for bounded LPs.
+
+Each application of case 1 produces a new feasible point with at least one more zero coordinate, and the objective does not increase ($c^\top y \le 0$, so $c^\top(x + t^* y) \le c^\top x$). There are only $n$ coordinates, so after at most $n$ repetitions, every negative component of $y$ has been exhausted and $x$ is a vertex. $\blacksquare$
+
+### Corollaries {#sec-corollaries}
+
+1. If the LP is bounded, there exists a vertex achieving the optimum.
+2. If $P$ is non-empty, it has at least one vertex. (Apply the claim with *any* objective function, e.g., $\min\, 0^\top x$.)
+
+
+## Characterising vertices via linear algebra {#sec-vertex-characterisation}
+
+Define the **support** of $x$ as $B_x = \{j : x_j > 0\}$ and the **submatrix** $A_{B_x}$ as the columns of $A$ indexed by $B_x$.
+
+::: {.callout-important title="Vertex characterisation"}
+$x \in P$ is a vertex $\iff$ the columns of $A_{B_x}$ are linearly independent.
+:::
+
+### Proof (both directions by contrapositive) {#sec-vertex-char-proof}
+
+**Not a vertex $\Rightarrow$ not linearly independent.**
+If $x$ is not a vertex, there exists non-zero $y$ with $Ay = 0$ and $y_j = 0$ whenever $x_j = 0$ (since perturbing a zero coordinate in either direction would make it negative). So $y$ has support contained in $B_x$, meaning $A_{B_x}$ has a non-trivial null vector — its columns are dependent.
+
+**Not linearly independent $\Rightarrow$ not a vertex.**
+If the columns of $A_{B_x}$ are dependent, there is a non-zero vector $y$ supported on $B_x$ with $Ay = 0$. Since $y$ only has mass where $x$ has mass (and $x$ is strictly positive there), for small enough $t > 0$ both $x + ty$ and $x - ty$ remain non-negative and satisfy $A(x \pm ty) = b$. So $x$ is not a vertex. $\blacksquare$
+
+Since $A$ has $m$ rows, the column rank is at most $m$. Linear independence of $A_{B_x}$ forces $|B_x| \le m$: a vertex has at most $m$ non-zero coordinates. There are at most $\binom{n}{m}$ vertices — one for each choice of $m$ columns from the $n$ total. This is a finite (though potentially exponential) bound, which is what guarantees that Simplex terminates.
+
+::: {.callout-note}
+Assume $A$ has full row rank $m$ (drop redundant constraints if not). Then every vertex has $|B_x| \le m$. If $|B_x| < m$, we can extend $B_x$ to a set $B$ of size $m$ with linearly independent columns — this is the **basis** for the vertex.
+:::
+
+
+## The Simplex algorithm {#sec-simplex}
+
+### Bases and reduced costs {#sec-bases-reduced-costs}
+
+Fix a vertex $x$ with basis $B$ (size $m$, columns of $A_B$ linearly independent, $A_B$ invertible). Let $N = \{1, \ldots, n\} \setminus B$ be the non-basic indices. Partition the LP:
+
+$$
+\min \; c_B^\top x_B + c_N^\top x_N \quad \text{s.t.} \quad A_B x_B + A_N x_N = b, \quad x_B, x_N \ge 0
+$$
+
+From the equality constraint: $x_B = A_B^{-1} b - A_B^{-1} A_N x_N$. Substitute into the objective:
+
+$$
+c^\top x = c_B^\top A_B^{-1} b + \tilde{c}_N^\top x_N
+$$ {#eq-reduced-obj}
+
+where the **reduced cost vector** is:
+
+$$
+\tilde{c}_N = c_N - A_N^\top (A_B^{-1})^\top c_B
+$$ {#eq-reduced-cost}
+
+The first term in @eq-reduced-obj is a constant (the cost at the current vertex, where $x_N = 0$). The objective improves if and only if we can increase some $x_j$ ($j \in N$) with $\tilde{c}_j < 0$.
+
+### The algorithm {#sec-simplex-steps}
+
+::: {.callout-important title="Simplex algorithm (Dantzig, 1947)"}
+1. **Initialise.** Start with a vertex $x$ and its basis $B$.
+2. **Compute reduced costs.** Find $\tilde{c}_N$ via @eq-reduced-cost.
+3. **Optimality check.** If $\tilde{c}_N \ge 0$ (all reduced costs non-negative), **halt** — $x$ is optimal.
+4. **Pivot.** Choose an index $j \in N$ with $\tilde{c}_j < 0$. Increase $x_j$ as much as possible while keeping $x_B \ge 0$. Some basic variable $x_k$ hits zero — swap $j$ into $B$ and $k$ out. The new $x$ is an adjacent vertex with strictly lower cost.
+5. **Repeat** from step 2.
+:::
+
+<!-- TikZ: A 3D polytope with five visible vertices. An arrow path from vertex v_1 to v_2 to v_3 (the optimum), each edge labeled with the reduced cost of the entering variable. At v_3, annotate "all reduced costs ≥ 0 → optimal". -->
+
+
+### How pivoting works {#sec-pivoting}
+
+When we increase $x_j$ (a non-basic variable with $\tilde{c}_j < 0$), the basic variables change via:
+
+$$
+x_B = A_B^{-1} b - A_B^{-1} A_N x_N
+$$
+
+Increasing $x_j$ decreases some coordinates of $x_B$. The rate of decrease depends on $A_B^{-1} a_j$ — the column of $A$ corresponding to $j$, expressed in the basis. We increase $x_j$ until the first basic variable hits zero — that variable leaves the basis, and $j$ enters. This is one **pivot** step: the new basis $B' = (B \setminus \{k\}) \cup \{j\}$ defines a new adjacent vertex.
+
+Geometrically, each pivot moves along an *edge* of the polytope to an adjacent vertex. The edge direction is determined by the entering variable, and the edge length is determined by which basic variable hits zero first. Because $\tilde{c}_j < 0$, the objective strictly decreases along this edge (assuming non-degeneracy), so Simplex never revisits a vertex.
+
+::: {.callout-warning title="Degeneracy and cycling"}
+If the current vertex has a basic variable that is already zero ($x_k = 0$ for some $k \in B$), the pivot may not actually move — $x_j$ cannot increase at all. Worse, careless pivoting can **cycle**: swap $j$ in and $k$ out, then swap $k$ back in on the next iteration, forever.
+
+**Bland's rule** (Bland, 1977): among all eligible entering variables ($\tilde{c}_j < 0$), choose the one with the smallest index; among all eligible leaving variables, choose the one with the smallest index. This provably prevents cycling.
+:::
+
+
+## Strong duality from Simplex {#sec-strong-duality}
+
+When Simplex halts, the reduced cost vector satisfies $\tilde{c}_N \ge 0$. This halting condition directly yields a dual certificate.
+
+The dual of @eq-standard is:
+
+$$
+\max \; b^\top y \quad \text{subject to} \quad A^\top y \le c
+$$ {#eq-dual}
+
+At the Simplex halting condition, set $y = (A_B^{-1})^\top c_B$. Then:
+
+- For $j \in B$: $a_j^\top y = a_j^\top (A_B^{-1})^\top c_B = c_j$ (the $j$-th column of $A_B$ times $A_B^{-\top} c_B$ extracts $c_j$). So $a_j^\top y \le c_j$. ✓
+- For $j \in N$: $a_j^\top y = a_j^\top (A_B^{-1})^\top c_B = c_j - \tilde{c}_j \le c_j$ (since $\tilde{c}_j \ge 0$). ✓
+
+So $y$ is dual feasible. Its objective value is $b^\top y = b^\top (A_B^{-1})^\top c_B = (A_B^{-1} b)^\top c_B = x_B^\top c_B = c^\top x$ (since $x_N = 0$). The primal and dual objectives match — strong duality holds.
+
+This also gives **complementary slackness** for free: for each $j$, either $x_j = 0$ or the dual constraint $a_j^\top y = c_j$ is tight (i.e., no slack). For $j \in B$, $x_j > 0$ and $a_j^\top y = c_j$ (tight). For $j \in N$, $x_j = 0$ and $a_j^\top y \le c_j$ (possibly with slack). This pairing between primal variables and dual constraints is the algebraic backbone of LP duality.
+
+::: {.callout-important}
+Simplex does not merely solve the primal LP. At termination, it hands you a dual feasible solution achieving the same objective — a **certificate of optimality**. Strong duality falls out as a corollary of Simplex's correctness.
+:::
+
+
+## Worst-case complexity and beyond {#sec-complexity}
+
+### Simplex: fast in practice, slow in theory {#sec-simplex-complexity}
+
+Each pivot moves to an adjacent vertex with strictly lower cost (assuming non-degeneracy or Bland's rule). There are at most $\binom{n}{m}$ vertices, so Simplex terminates. But $\binom{n}{m}$ can be exponential.
+
+No known pivoting rule achieves polynomial worst-case time. Klee and Minty (1972) constructed polytopes where the standard pivoting rule visits *every* vertex — exponentially many. Despite this, Simplex is fast in practice. Spielman and Teng (2004) gave a partial theoretical explanation via **smoothed analysis**: under tiny random perturbations of the data, the expected number of Simplex pivots is polynomial.
+
+### The ellipsoid method {#sec-ellipsoid}
+
+Khachiyan (1979) resolved a major open question: LP is in P.
+
+The **ellipsoid method** maintains an ellipsoid guaranteed to contain the optimal solution. At each step, it queries whether the centre is feasible. If not, a violated constraint defines a half-space; the algorithm shrinks the ellipsoid to the half contained in that half-space. The volume shrinks by a constant factor each step, guaranteeing convergence in polynomially many iterations.
+
+::: {.callout-note title="Aside (mine, not the lecturer's)"}
+The ellipsoid method is polynomial but slow in practice — much slower than Simplex on real problems. **Interior-point methods** (Karmarkar, 1984) achieve the best of both worlds: polynomial worst-case time *and* practical speed. Modern LP solvers (CPLEX, Gurobi, HiGHS) typically offer both Simplex and interior-point as options, choosing automatically based on problem structure.
+:::
+
+<!-- TikZ: Left: a polytope with Simplex's edge-walking path highlighted. Right: the same polytope with an ellipsoid shrinking toward the interior, showing the ellipsoid method's trajectory. Labels: "Simplex: walks edges" and "Ellipsoid: shrinks volumes". -->
+
+
+## Cheat sheet {#sec-cheat-sheet}
+
+::: {.callout-important title="Cheat sheet — Solving LPs"}
+
+**Standard form.** $\min\, c^\top x$ s.t. $Ax = b$, $x \ge 0$. Convert via: max → min (negate $c$), inequalities → slacks, free vars → non-negative pairs.
+
+**Vertex.** $x \in P$ where you cannot perturb in any direction and stay feasible. Equivalently: columns of $A_{B_x}$ (active columns) are linearly independent. At most $m$ non-zero coordinates; $\le \binom{n}{m}$ vertices total.
+
+**Key theorem.** Bounded LP $\Rightarrow$ some vertex is optimal.
+
+**Simplex.**
+
+- Start at a vertex (via auxiliary LP).
+- Compute reduced costs: $\tilde{c}_j = c_j - a_j^\top (A_B^{-1})^\top c_B$.
+- If $\tilde{c}_N \ge 0$: halt, $x$ is optimal.
+- Else: pivot — increase $x_j$ with $\tilde{c}_j < 0$, swap basis elements.
+- Bland's rule prevents cycling under degeneracy.
+
+**Strong duality.** At halt, $y = (A_B^{-1})^\top c_B$ is dual feasible with $b^\top y = c^\top x$. Primal and dual objectives match.
+
+**Complexity.** Simplex: exponential worst case, fast in practice (smoothed analysis: polynomial). Ellipsoid: polynomial worst case, slow in practice. Interior-point: polynomial worst case, fast in practice.
+:::
+
+
+## FAQ — questions students actually asked {#sec-faq}
+
+**Q: Why would the binary search terminate when reducing optimization to feasibility?**
+
+The optimal value is a rational number whose precision (number of bits) is bounded by the input size — it is the solution to a linear system on a submatrix of $A$. You only need that many iterations of binary search to pin down the exact optimum.
+
+**Q: Why does the auxiliary LP have a starting vertex?**
+
+At $x = 0$, $t = 1$, $s_t = 0$, every variable is at its boundary. Any perturbation $y$ would push some variable negative (since they are all zero or at their upper bound). By the vertex characterisation, this is a vertex.
+
+**Q: If $|B_x| < m$, can we still run Simplex?**
+
+Yes. Extend $B_x$ to a set $B$ of size exactly $m$ by adding columns that maintain linear independence. The extra columns correspond to variables that are zero — they are in the basis "for free." This is a technical convenience that keeps $A_B$ square and invertible.
+
+**Q: Can Simplex cycle forever?**
+
+Without a careful pivoting rule, yes. If a basis has a degenerate variable (zero-valued basic variable), a pivot might not change the vertex at all, and repeated pivots can cycle. Bland's rule (1977) prevents this: always pick the smallest-index eligible entering and leaving variables. Other anti-cycling rules exist, but in practice, many implementations use rules that can theoretically cycle and simply don't worry about it — degenerate cycling is rare on real problems.
+
+**Q: If no implementation of Simplex is polynomial, why does everyone use it?**
+
+Worst-case exponential does not mean typical-case exponential. Spielman and Teng's smoothed analysis (2004) shows that under tiny random perturbations, the expected number of pivots is polynomial. Real-world LPs are never exactly worst-case instances. Simplex's practical speed, warm-start capability, and ability to produce dual solutions make it the workhorse of optimisation.
+
+
+## Further reading {#sec-further-reading}
+
+- **Dantzig, G. B. (1963).** *Linear Programming and Extensions.* Princeton University Press. The original treatment of the Simplex method by its inventor.
+
+- **Bland, R. G. (1977).** "New Finite Pivoting Rules for the Simplex Method." *Mathematics of Operations Research, 2(2): 103–107.* The anti-cycling pivoting rule.
+
+- **Khachiyan, L. G. (1979).** "A Polynomial Algorithm in Linear Programming." *Doklady Akademii Nauk SSSR, 244: 1093–1096.* The ellipsoid method — first polynomial-time LP algorithm.
+
+- **Spielman, D. A. & Teng, S.-H. (2004).** "Smoothed Analysis of Algorithms: Why the Simplex Algorithm Usually Takes Polynomial Time." *Journal of the ACM, 51(3): 385–463.* Theoretical explanation for Simplex's practical speed.
+
+- **Klee, V. & Minty, G. J. (1972).** "How Good Is the Simplex Algorithm?" In *Inequalities III*, pp. 159–175. Academic Press. Exponential lower bound for a specific pivoting rule.
+
+
+## Try it yourself {#sec-exercises}
+
+1. **Standard form practice.** Convert the following LP to standard form:
+   $$\max\; 3x_1 + 2x_2 \quad \text{s.t.} \quad x_1 + x_2 \le 4, \quad 2x_1 - x_2 \ge 1, \quad x_1 \ge 0, \; x_2 \text{ unrestricted.}$$
+   How many variables and constraints does the standard-form LP have?
+
+2. **Vertex counting.** A standard-form LP has $m = 3$ equality constraints and $n = 6$ variables. What is the maximum number of vertices? Give an example polytope achieving this bound.
+
+3. **One Simplex iteration by hand.** Consider:
+   $$\min\; -2x_1 - 3x_2 \quad \text{s.t.} \quad x_1 + x_2 + s_1 = 4, \quad x_1 + 2x_2 + s_2 = 6, \quad x_1, x_2, s_1, s_2 \ge 0.$$
+   Start at the vertex $x_1 = x_2 = 0$, $s_1 = 4$, $s_2 = 6$ with basis $B = \{s_1, s_2\}$. Compute the reduced costs. Identify the entering variable. Perform one pivot: find the leaving variable and the new vertex.
+
+4. **Reading off the dual.** After solving the LP in exercise 3 to optimality via Simplex, construct the dual feasible solution from $y = (A_B^{-1})^\top c_B$. Verify that $b^\top y$ equals the primal optimum.
+
+5. **Klee–Minty in code.** Implement the Simplex algorithm in Python (or use `scipy.optimize.linprog` with `method='revised simplex'`). Construct the Klee–Minty cube in $d$ dimensions and count the number of pivots for $d = 3, 4, 5, 6$. Plot pivots vs. $d$ — does it look exponential?

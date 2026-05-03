@@ -1,0 +1,334 @@
+---
+title: "Randomized Ski Rental, Online Set Cover, and Approximation Algorithms"
+subtitle: "COMPSCI 224 Lecture 10 — Fall 2014"
+author: "Companion notes by Kun Deng"
+date: today
+abstract: |
+  Randomisation drops ski rental's competitive ratio from 2 to $e/(e-1) \approx 1.58$
+  by rounding a fractional primal-dual solution with a single uniform threshold.
+  Online set cover, analysed through the same primal-dual lens, achieves
+  $O(\log n \cdot \log m)$-competitive via continuous multiplicative updates.
+  The lecture closes by pivoting to offline approximation algorithms, previewing
+  the dual-fitting analysis of greedy set cover.
+---
+
+## Why this lecture matters
+
+This lecture completes the online primal-dual toolkit by showing its two most important moves: (1) randomised rounding of fractional solutions to beat deterministic barriers, and (2) continuous multiplicative weight updates that naturally produce logarithmic competitive ratios. These techniques recur across algorithm design—from online learning to offline approximation—making them among the most versatile ideas in theoretical CS.
+
+::: {.callout-tip title="30-second story"}
+1. A fractional primal-dual solution for ski rental achieves ratio $1 + 1/c$ where $c = (1+1/B)^B - 1 \to e-1$.
+2. A single random threshold converts the fractional solution to an integral one with the same expected cost.
+3. Online set cover uses exponential growth ($dx/dt = x$) to satisfy constraints, giving $O(\log m)$ fractional competitive ratio.
+4. Repeating $O(\log n)$ independent random thresholds ensures feasibility with high probability, yielding $O(\log n \cdot \log m)$ overall.
+5. Offline approximation algorithms seek polynomial-time $\alpha$-approximate solutions to NP-hard problems.
+6. Dual fitting—violating dual feasibility then scaling down—proves the greedy set cover algorithm is $O(\log n)$-approximate.
+:::
+
+## Randomised ski rental: beating the factor of 2 {#sec-randomised-ski}
+
+Recall the ski rental LP from Lecture 9:
+
+$$
+\textbf{Primal:}\quad \min\; Bx + \sum_{i=1}^K z_i \quad\text{s.t.}\quad x + z_i \geq 1,\;\; x, z_i \geq 0
+$$ {#eq-ski-primal-10}
+
+$$
+\textbf{Dual:}\quad \max\; \sum_{i=1}^K y_i \quad\text{s.t.}\quad \sum y_i \leq B,\;\; 0 \leq y_i \leq 1
+$$ {#eq-ski-dual-10}
+
+### The fractional algorithm
+
+Initialise $x = 0$, all $z_i = 0$, all $y_i = 0$. When constraint $i$ arrives:
+
+- If $x \geq 1$: do nothing.
+- Otherwise: set $z_i = 1 - x$, update $x \leftarrow (1 + 1/B)\,x + 1/(cB)$, set $y_i = 1$.
+
+Here $c$ is a constant chosen to ensure dual feasibility.
+
+::: {.callout-note title="Why this update rule?"}
+The increments $x_i$ to $x$ form a geometric sequence with ratio $q = 1 + 1/B$. Starting from $x_1 = 1/(cB)$, after $B$ days the sum reaches $\frac{1}{cB} \cdot \frac{q^B - 1}{q - 1} = \frac{(1+1/B)^B - 1}{c}$. Setting $c = (1+1/B)^B - 1$ makes $x = 1$ after exactly $B$ days, ensuring dual feasibility ($\sum y_i \leq B$).
+:::
+
+### Bounding the competitive ratio
+
+In each step where both objectives change:
+
+- Dual objective increases by 1 (we set $y_i = 1$).
+- Primal objective increases by $B \cdot \Delta x + z_i = B \cdot (x/B + 1/(cB)) + (1-x) = x + 1/c + 1 - x = 1 + 1/c$.
+
+Therefore:
+
+$$
+\frac{\text{Primal cost}}{\text{Dual cost}} \;\leq\; 1 + \frac{1}{c} = 1 + \frac{1}{(1+1/B)^B - 1}
+$$ {#eq-ratio-bound}
+
+As $B \to \infty$, $(1+1/B)^B \to e$, so the ratio converges to $\frac{e}{e-1} \approx 1.582$.
+
+<!-- TikZ: plot of competitive ratio (1 + 1/c) vs B for B = 1..20, with horizontal asymptote at e/(e-1) -->
+
+::: {.callout-important}
+The exact competitive ratio is $(1+1/B)^B / ((1+1/B)^B - 1)$. At $B=1$ this equals 2 (matching deterministic); as $B\to\infty$ it approaches $e/(e-1)$.
+:::
+
+### Randomised rounding: from fractions to decisions
+
+The fractional solution isn't a valid ski-rental strategy (you can't rent 0.3 of a ski). The fix:
+
+1. At the start, draw $\alpha \sim \text{Uniform}[0,1]$.
+2. Maintain the fractional solution $x$ as before.
+3. **Buy on the first day $i$ where $x \geq \alpha$.** Until that day, rent.
+
+<!-- TikZ: number line [0,1] with tick marks showing cumulative x_1, x_1+x_2, ..., random α marked with arrow, "buy on day 4" annotation -->
+
+**Analysis of expected cost:**
+
+$$
+\mathbb{E}[\text{cost}] = \mathbb{E}[\text{buying cost}] + \mathbb{E}[\text{renting cost}]
+$$
+
+- $\mathbb{E}[\text{buying}] = B \cdot \Pr[\text{buy}] = B \cdot \Pr[\alpha \leq x] = Bx$.
+- $\mathbb{E}[\text{rent on day } i] = \Pr[\text{haven't bought by day } i] = \Pr[\alpha > x_1 + \cdots + x_{i-1}] = 1 - (x_1 + \cdots + x_{i-1}) = z_i$.
+
+Therefore $\mathbb{E}[\text{cost}] = Bx + \sum z_i$ = the fractional primal objective.
+
+::: {.callout-tip}
+The randomised rounding preserves the fractional cost *exactly* in expectation. No approximation loss occurs in the rounding step—the entire competitive ratio comes from the fractional algorithm.
+:::
+
+This result is originally due to Karlin et al. (*Algorithmica*, 1994); the primal-dual viewpoint is from Buchbinder and Naor.
+
+## Online set cover {#sec-online-set-cover}
+
+### Problem definition
+
+Given a universe $\{1, \ldots, n\}$ and $m$ sets $S_1, \ldots, S_m$ (each a subset of the universe), pick a minimum-size subcollection whose union covers the entire universe.
+
+**Online twist:** The sets are known upfront, but elements arrive one at a time. When element $i$ arrives, you learn which sets contain it. If $i$ is not already covered, you must immediately select a set to cover it (irrevocably).
+
+::: {.callout-warning}
+Set cover is NP-hard to approximate within better than $\ln n$ (offline). Don't expect an online algorithm to do better than $O(\log n)$-competitive, even with unlimited computation.
+:::
+
+### LP relaxation
+
+$$
+\textbf{Primal:}\quad \min \sum_{s \in \mathcal{C}} x_s \quad\text{s.t.}\quad \sum_{s \ni i} x_s \geq 1 \;\;\forall i,\;\; x_s \geq 0
+$$ {#eq-sc-primal}
+
+$$
+\textbf{Dual:}\quad \max \sum_{i=1}^n y_i \quad\text{s.t.}\quad \sum_{i \in s} y_i \leq 1 \;\;\forall s,\;\; y_i \geq 0
+$$ {#eq-sc-dual}
+
+### The multiplicative-update algorithm
+
+**Initialise:** $x_s = 1/m$ for all sets $s$.
+
+**When element $i$ arrives** (uncovered): let $S_{j_1}, \ldots, S_{j_r}$ be the sets containing $i$. Run a continuous process: simultaneously evolve all $x_{j_k}$ according to
+
+$$
+\frac{dx_s(t)}{dt} = x_s(t)
+$$ {#eq-exp-growth}
+
+until $\sum_{s \ni i} x_s \geq 1$. This multiplies each relevant $x_s$ by $e^t$ for the duration $t$ needed to satisfy the constraint.
+
+<!-- TikZ: graph showing exponential growth curves of x_{j1}, x_{j2}, x_{j3} over time t, with horizontal dashed line at threshold 1 for their sum -->
+
+### Analysis: the purely primal view {#sec-sc-primal-view}
+
+**Key observation:** No set in OPT can evolve for more than $\ln m$ total seconds.
+
+*Proof:* Every $x_s$ starts at $1/m$. Whenever a constraint triggers evolution, $\sum_{s \ni i} x_s < 1$, so each individual $x_s < 1$. After $\ln m$ seconds of growth from $1/m$, a set reaches $(1/m) \cdot e^{\ln m} = 1$—at which point its constraint is already satisfied and it never evolves again.
+
+Since OPT has at most OPT sets, and each evolves for at most $\ln m$ seconds, the total evolution time is at most $\text{OPT} \cdot \ln m$.
+
+**Bounding the primal objective's growth rate:** During evolution for constraint $i$:
+
+$$
+\frac{d}{dt}\bigl(x_{j_1} + \cdots + x_{j_r}\bigr) = x_{j_1} + \cdots + x_{j_r} < 1
+$$
+
+(since evolution runs only while the sum is below 1). The primal objective $\sum_s x_s$ therefore increases by less than 1 per second.
+
+**Conclusion:** The primal objective starts at $m \cdot (1/m) = 1$ and grows by at most 1 per second for at most $\text{OPT} \cdot \ln m$ seconds:
+
+$$
+\text{Primal cost} \;\leq\; 1 + \text{OPT} \cdot \ln m \;\leq\; O(\text{OPT} \cdot \ln m)
+$$ {#eq-sc-ratio}
+
+### The primal-dual view {#sec-sc-pd-view}
+
+Augment the algorithm: alongside the $x_s$ evolution, set $dy_i/dt = 1$ during the evolution triggered by element $i$.
+
+- **Primal cost vs. dual cost:** In every second, the primal increases by $< 1$ and the dual increases by exactly 1. So $\text{Primal cost} \leq \text{Dual cost}$.
+- **Dual feasibility (after scaling):** For any set $s$, whenever $\sum_{i \in s} y_i$ increases, $x_s$ is also growing. Since $x_s$ can grow for at most $\ln m$ seconds, $\sum_{i \in s} y_i \leq \ln m$. Therefore $\mathbf{y} / \ln m$ is dual-feasible.
+
+Chaining inequalities:
+
+$$
+\frac{\text{Dual cost}}{\ln m} \;\leq\; \text{OPT}_D \;\leq\; \text{OPT}_P \;\leq\; \text{Primal cost} \;\leq\; \text{Dual cost}
+$$
+
+So Primal cost $\leq \ln m \cdot \text{OPT}$.
+
+::: {.callout-note title="Aside (mine, not the lecturer's)"}
+Buchbinder and Naor (2009) show this bound is tight up to $O(\log\log)$ factors for the online setting—you cannot achieve $o(\log m)$-competitive online.
+:::
+
+### Randomised rounding for integrality {#sec-sc-rounding}
+
+The fractional solution must be converted to actual set selections. Naive single-threshold rounding (as in ski rental) may fail to cover some elements.
+
+**Fix:** For each set $s$, draw $r = O(\log n)$ independent thresholds $\alpha_{s,1}, \ldots, \alpha_{s,r} \sim \text{Uniform}[0,1]$. Take $s$ into the solution as soon as $x_s \geq \alpha_{s,j}$ for any $j$.
+
+- **Expected cost** increases by factor $r = O(\log n)$, giving $O(\log n \cdot \log m)$.
+- **Feasibility:** For each element $i$, the probability of *not* being covered by a single threshold is $\leq 1/2$ (since $\sum_{s\ni i} x_s \geq 1$). With $r = O(\log n)$ independent trials, failure probability drops to $1/\text{poly}(n)$. Union bound over $n$ elements gives high-probability feasibility.
+
+::: {.callout-important}
+Online set cover achieves $O(\log n \cdot \log m)$-competitive ratio, nearly matching the $\Omega(\log m \cdot \log n / \log\log n)$ lower bound.
+:::
+
+## Transition to approximation algorithms {#sec-approx-intro}
+
+The remaining minutes pivot from online to offline:
+
+**Setting.** Given an NP-hard optimisation problem, find a polynomial-time algorithm producing a solution within factor $\alpha$ of OPT.
+
+The primal-dual method applies here too—in fact, it's *older* in the approximation setting (1970s) than in the online setting (2000s).
+
+### Weighted set cover and the greedy algorithm {#sec-greedy-sc}
+
+Now sets have costs $c_s > 0$. Minimise $\sum_{s \text{ chosen}} c_s$ subject to covering the universe.
+
+**Greedy algorithm:** While uncovered elements remain, pick the set $s$ minimising $c_s / |\text{newly covered elements}|$ (cost per new element).
+
+**LP formulation:**
+
+$$
+\textbf{Primal:}\quad \min \sum_s c_s x_s \quad\text{s.t.}\quad \sum_{s \ni i} x_s \geq 1 \;\;\forall i,\;\; x_s \geq 0
+$$ {#eq-wsc-primal}
+
+$$
+\textbf{Dual:}\quad \max \sum_{i=1}^n y_i \quad\text{s.t.}\quad \sum_{i \in s} y_i \leq c_s \;\;\forall s,\;\; y_i \geq 0
+$$ {#eq-wsc-dual}
+
+### Dual-fitting analysis (preview)
+
+When the greedy algorithm takes set $s$:
+
+- Set $x_s = 1$ (primal cost increases by $c_s$).
+- For each newly covered $i \in s$, set $y_i = c_s / (\text{number newly covered})$.
+
+The primal and dual costs are equal by construction. The dual may violate feasibility—some constraint $\sum_{i \in s} y_i \leq c_s$ may be exceeded—but by at most a factor of $H_n = O(\log n)$.
+
+::: {.callout-note title="Dual fitting"}
+Scale $\mathbf{y}$ down by $H_n$ to obtain a feasible dual solution. Then:
+$$
+\frac{\text{Dual cost}}{H_n} \leq \text{OPT} \leq \text{Primal cost} = \text{Dual cost}
+$$
+so Primal cost $\leq H_n \cdot \text{OPT}$. The greedy algorithm is an $H_n$-approximation.
+:::
+
+The full proof (deferred to next lecture) shows that the per-set dual violation is at most $H_{|s|}$, which telescopes to $H_n$ globally.
+
+## Cheat sheet {#sec-cheat-sheet}
+
+::: {.callout-important title="Cheat sheet — Lecture 10"}
+
+**Randomised ski rental**
+
+- Fractional primal-dual: geometric increments to $x$, ratio $= 1 + 1/c$ where $c = (1+1/B)^B - 1$.
+- Rounding: draw $\alpha \sim U[0,1]$; buy when $x \geq \alpha$. Expected cost = fractional cost.
+- Competitive ratio: $e/(e-1) \approx 1.58$ as $B \to \infty$.
+
+**Online set cover**
+
+- Initialise $x_s = 1/m$. On new element: exponentially grow $x_s$ for containing sets until covered.
+- Fractional competitive ratio: $O(\log m)$.
+- Integrality: $O(\log n)$ independent random thresholds → $O(\log n \cdot \log m)$ total.
+- Primal-dual view: dual grows at rate 1, primal at rate $\leq 1$; dual violates by $\ln m$ factor.
+
+**Approximation algorithms (intro)**
+
+- NP-hard problem + polynomial time → accept factor-$\alpha$ loss.
+- Dual fitting: build primal/dual with equal cost; scale infeasible dual down to get $\alpha$.
+- Greedy weighted set cover: $H_n$-approximate via dual fitting.
+:::
+
+## FAQ — questions students actually asked {#sec-faq}
+
+**Q: In the randomised ski rental, once we pick $\alpha$, the buy-day is deterministic. Where's the randomness helping?**
+A: The adversary doesn't know $\alpha$. For any fixed season length $K$, some values of $\alpha$ buy early (bad if $K$ is small) and some buy late (bad if $K$ is large). The uniform distribution ensures no single $K$ can be catastrophic in expectation—the adversary can't pick a worst case.
+
+**Q: For online set cover, why not just round each $x_s$ to 1 once it exceeds 1/2?**
+A: That would give expected coverage $\geq 1/2$ per element—a coin flip for each. With $n$ elements, some will fail. You need the expected coverage to be $\Omega(\log n)$ per element so that the failure probability drops below $1/n$ (for a union bound).
+
+**Q: Why does the differential equation $dx/dt = x$ give us what we want?**
+A: The exponential $x(t) = x(0) \cdot e^t$ is the unique growth rate that makes the competitive-ratio analysis work. The primal objective's growth rate equals the current constraint slack (which is $<1$), while the dual grows at rate exactly 1. Any faster growth overshoots; any slower growth doesn't satisfy constraints fast enough.
+
+**Q: Can you do set cover without knowing $n$ in advance?**
+A: The fractional algorithm doesn't need $n$—it only needs to know $m$ (to initialise $x_s = 1/m$). The rounding step uses $\log n$ repetitions; you can remove this assumption by doubling the repetition count adaptively or using a standard "guess-and-double" technique.
+
+**Q: Is the $\log n \cdot \log m$ bound tight for online set cover?**
+A: Nearly. There's a lower bound of $\Omega(\log m \cdot \log n / \log\log n)$ from Buchbinder and Naor. The gap is a $\log\log$ factor—closing it is a potential research question.
+
+**Q: For the greedy set cover analysis, why does the dual violation per set telescope to $H_n$?**
+A: When greedy picks set $s$ covering $k$ new elements, it assigns $y_i = c_s/k$ to each. For a fixed set $s'$, its elements get "charged" in rounds where progressively fewer elements remain uncovered. The charges form a sequence $c_{s'}/k_1 + c_{s'}/k_2 + \cdots$ where $k_1 \geq k_2 \geq \cdots$—bounded by $c_{s'} \cdot H_{|s'|} \leq c_{s'} \cdot H_n$.
+
+## Further reading {#sec-further-reading}
+
+- **Karlin, A. R., Manasse, M. S., McGeoch, L. A., & Owicki, S.** (1994). Competitive randomized algorithms for nonuniform problems. *Algorithmica*, 11(6), 542–571. — Original $e/(e-1)$ ski rental result.
+- **Buchbinder, N. & Naor, J.** (2009). The design of competitive online algorithms via a primal-dual approach. *Foundations and Trends in TCS*, 3(2–3), 93–263. — Comprehensive treatment of online primal-dual including set cover.
+- **Alon, N., Awerbuch, B., Azar, Y., Buchbinder, N., & Naor, J.** (2003). The online set cover problem. *STOC 2003*. — Original $O(\log m \cdot \log n)$ online set cover (purely primal view).
+- **Vazirani, V. V.** (2001). *Approximation Algorithms*. Springer. — Standard reference for offline approximation, including greedy set cover and dual fitting.
+- **Chvátal, V.** (1979). A greedy heuristic for the set-covering problem. *Mathematics of Operations Research*, 4(3), 233–235. — Classic $H_n$-approximation proof for greedy set cover.
+
+## Try it yourself {#sec-exercises}
+
+1. **Compute the constant.** For $B = 10$, compute the exact competitive ratio $(1+1/B)^B / ((1+1/B)^B - 1)$. How close is it to $e/(e-1)$?
+
+2. **Verify the rounding.** In the randomised ski rental with $B = 4$, write out the increments $x_1, x_2, x_3, x_4$. Draw the interval $[0,1]$ partitioned by cumulative sums. For $\alpha = 0.6$, on which day do you buy?
+
+3. **Online set cover example.** Consider $m = 4$ sets over universe $\{1,2,3,4,5\}$ with $S_1 = \{1,2,3\}$, $S_2 = \{2,4\}$, $S_3 = \{3,5\}$, $S_4 = \{1,4,5\}$. Elements arrive in order $3, 4, 1, 5, 2$. Simulate the multiplicative-update algorithm (starting at $x_s = 1/4$) for the first two elements. What are the final $x_s$ values?
+
+4. **Dual-fitting by hand.** For the weighted set cover instance: $S_1 = \{a,b,c\}$ cost 6, $S_2 = \{b,c,d\}$ cost 3, $S_3 = \{a,d\}$ cost 4. Run greedy, construct the dual $y$ values, and verify the maximum dual violation factor.
+
+5. **Code it.** Implement the online set cover algorithm (fractional + randomised rounding) in Python. Test on random instances with $n = 100$, $m = 50$, sets of random size 5–15. Measure the empirical competitive ratio over 1000 trials and compare to $\ln n \cdot \ln m$.
+
+```python
+import numpy as np
+
+def online_set_cover_fractional(n, sets, element_order):
+    """
+    Simulate the fractional online set cover algorithm.
+
+    Args:
+        n: universe size
+        sets: list of sets (each a set of element indices)
+        element_order: order in which elements arrive
+
+    Returns:
+        x: final fractional solution (array of length m)
+    """
+    m = len(sets)
+    x = np.full(m, 1.0 / m)
+
+    for elem in element_order:
+        # Find sets containing this element
+        containing = [j for j, s in enumerate(sets) if elem in s]
+
+        # Check if already covered
+        if sum(x[j] for j in containing) >= 1.0:
+            continue
+
+        # Evolve until covered (solve for t analytically)
+        current_sum = sum(x[j] for j in containing)
+        # After time t: sum becomes current_sum * e^t >= 1
+        t = np.log(1.0 / current_sum)
+
+        # Apply multiplicative update
+        for j in containing:
+            x[j] *= np.exp(t)
+
+    return x
+```
